@@ -1,0 +1,43 @@
+{
+  "name": "nodejspro-ecom",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "dev": "nodemon",
+    "githooks:commit-msg": "commitlint --edit",
+    "lint": "eslint ./ --max-warnings 0",
+    "precommit": "lint-staged && npm run ts-lint",
+    "prepare": "husky install",
+    "start": "node ./build/index.js",
+    "test": "tsc -p tsconfig.test.json && node --test ./.test-build/test/*.test.js",
+    "ts-lint": "tsc --noEmit"
+  },
+  "dependencies": {
+    "express": "4.22.2"
+  },
+  "devDependencies": {
+    "@commitlint/cli": "20.1.0",
+    "@commitlint/config-conventional": "20.0.0",
+    "@types/express": "5.0.6",
+    "@types/node": "24.13.3",
+    "eslint": "9.38.0",
+    "eslint-config-prettier": "10.1.1",
+    "eslint-import-resolver-typescript": "4.4.4",
+    "eslint-plugin-import": "2.32.0",
+    "eslint-plugin-prettier": "5.5.4",
+    "eslint-plugin-simple-import-sort": "12.1.1",
+    "eslint-plugin-unused-imports": "4.3.0",
+    "husky": "^8.0.0",
+    "lint-staged": "16.2.6",
+    "nodemon": "3.1.14",
+    "prettier": "3.6.2",
+    "sort-package-json": "3.4.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.67.0"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

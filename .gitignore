@@ -1,0 +1,34 @@
+# Dependencies
+node_modules
+.pnpm-store
+.pnp
+.pnp.js
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.env.development
+.env.production
+
+# Turbo (leftover from monorepo tooling, harmless if unused)
+.turbo
+
+# Build outputs
+build
+dist
+.test-build
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Misc
+.DS_Store
+*.pem
+
+# TypeScript
+*.tsbuildinfo

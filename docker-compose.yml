@@ -1,0 +1,21 @@
+services:
+  api:
+    image: nodejspro-ecom-api:prod
+    build:
+      context: .
+      target: runner
+    init: true
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '5'
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+        reservations:
+          cpus: '0.25'
+          memory: 300M
