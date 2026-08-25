@@ -1,0 +1,376 @@
+openapi: 3.0.3
+info:
+  title: E-commerce API
+  version: 1.0.0
+  description: >
+    Contract-first API for e-commerce: browsing products and placing
+    orders.
+servers:
+  - url: http://localhost:3000
+security: []
+
+paths:
+  /products:
+    get:
+      operationId: listProducts
+      summary: List products
+      tags:
+        - products
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of products.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProductListResponse'
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /products/{productId}:
+    get:
+      operationId: getProduct
+      summary: Get a single product by id
+      tags:
+        - products
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The requested product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '404':
+          description: Product not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /orders:
+    get:
+      operationId: listOrders
+      summary: List orders
+      tags:
+        - orders
+      parameters:
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: A page of orders.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderListResponse'
+        '400':
+          description: Invalid query parameters.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+    post:
+      operationId: createOrder
+      summary: Create a new order
+      tags:
+        - orders
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+          description: >
+            Client-generated key that makes retrying this request safe.
+            The first request carrying a given key is executed normally;
+            any retry that reuses the same key together with the exact
+            same request body returns the response that was already
+            produced instead of creating a second order.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+      responses:
+        '201':
+          description: Order created.
+          headers:
+            Location:
+              description: URL of the newly created order.
+              schema:
+                type: string
+            Idempotency-Replay:
+              description: >
+                Present and set to "true" when this response was replayed
+                from an earlier request that used the same Idempotency-Key.
+              schema:
+                type: string
+                example: 'true'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: Validation failed for the request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >
+            A request with this Idempotency-Key is already being
+            processed; retry once it completes.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: >
+            The Idempotency-Key was reused with a request body that
+            differs from the original request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /orders/{orderId}:
+    get:
+      operationId: getOrder
+      summary: Get a single order by id
+      tags:
+        - orders
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: The requested order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '404':
+          description: Order not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+components:
+  parameters:
+    Limit:
+      name: limit
+      in: query
+      required: false
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+        default: 20
+      description: Maximum number of items to return.
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      schema:
+        type: string
+      description: >
+        Opaque pagination token taken from a previous response's
+        `next_cursor`. Clients must treat it as an unstructured string and
+        must not attempt to parse or construct one themselves.
+  schemas:
+    ProductListResponse:
+      type: object
+      required:
+        - items
+        - next_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Product'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque cursor for the next page, or null when there are no
+            more pages.
+
+    OrderListResponse:
+      type: object
+      required:
+        - items
+        - next_cursor
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/Order'
+        next_cursor:
+          type: string
+          nullable: true
+          description: >
+            Opaque cursor for the next page, or null when there are no
+            more pages.
+
+    Product:
+      type: object
+      required:
+        - id
+        - name
+        - price_cents
+        - currency
+        - created_at
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        price_cents:
+          type: integer
+          description: Price in the smallest currency unit (e.g. cents).
+        currency:
+          type: string
+          example: USD
+        created_at:
+          type: string
+          format: date-time
+
+    OrderItem:
+      type: object
+      required:
+        - productId
+        - quantity
+      properties:
+        productId:
+          type: string
+        quantity:
+          type: integer
+          minimum: 1
+
+    Order:
+      type: object
+      required:
+        - id
+        - status
+        - total_cents
+        - currency
+        - items
+        - created_at
+      properties:
+        id:
+          type: string
+        status:
+          type: string
+          enum: [unpaid, paid]
+        total_cents:
+          type: integer
+          description: Total order amount in the smallest currency unit (e.g. cents).
+        currency:
+          type: string
+          example: USD
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/OrderItem'
+        created_at:
+          type: string
+          format: date-time
+
+    CreateOrderRequest:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          minItems: 1
+          items:
+            $ref: '#/components/schemas/OrderItem'
+
+    Problem:
+      type: object
+      description: >
+        RFC 9457 problem detail, returned as `application/problem+json`
+        for every 4xx/5xx response.
+      required:
+        - type
+        - title
+        - status
+        - detail
+        - instance
+        - method
+      properties:
+        type:
+          type: string
+          format: uri-reference
+          description: >
+            Stable URI identifying this class of error. Clients should
+            match on this field, never on `detail` text, since `detail`
+            varies between occurrences of the same problem type.
+          example: /problems/not-found
+        title:
+          type: string
+          description: >
+            Short, human-readable summary that is the same for every
+            occurrence of this problem type.
+          example: Resource not found
+        status:
+          type: integer
+          description: The HTTP status code for this occurrence, duplicated here for convenience.
+          example: 404
+        detail:
+          type: string
+          description: Human-readable explanation specific to this occurrence.
+          example: Order 99 not found
+        instance:
+          type: string
+          format: uri-reference
+          description: Reference identifying the specific request that produced this problem.
+          example: /orders/99
+        method:
+          type: string
+          description: >
+            HTTP method of the request that produced this problem;
+            paired with `instance` this fully identifies the request.
+          example: GET
+        errors:
+          type: array
+          description: >
+            Present only on validation problems: one entry per invalid
+            field in the request body.
+          items:
+            $ref: '#/components/schemas/ProblemFieldError'
+
+    ProblemFieldError:
+      type: object
+      required:
+        - field
+        - constraints
+      properties:
+        field:
+          type: string
+          description: Name of the invalid field.
+          example: items
+        constraints:
+          type: array
+          items:
+            type: string
+          description: Human-readable description of each rule this field violated.
+          example: ['must NOT have fewer than 1 items']
