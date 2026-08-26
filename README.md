@@ -74,3 +74,43 @@ Render it as a static HTML doc (Redoc) and open `openapi/docs.html`:
 ```bash
 npx @redocly/cli@2.46.0 build-docs openapi/openapi.yaml -o openapi/docs.html
 ```
+
+## Contract Enforcement | Variant Б
+
+Chosen variant: **Б — runtime validation**. A NestJS app (`src/`) with
+`express-openapi-validator` mounted in front of it, reading
+`openapi/openapi.yaml` directly (`validateRequests` + `validateResponses`).
+Request shape, the required `Idempotency-Key` header, and outgoing response
+shapes are all enforced by the spec — nothing about them is checked by
+hand-written `if`s in the code.
+
+### Run
+
+```bash
+npm install
+npm run build
+npm start
+```
+
+The server listens on `PORT` (default `3000`).
+
+### Verify — `contract/check.js`
+
+A machine check, modeled on Lecture 9's own `contract/check.mjs`: it reads
+`openapi/openapi.yaml` directly (no live `/docs-json` route here, since
+Swagger isn't wired in), fires one real request per operation at the
+**running** server, and validates each response — status, content-type,
+required response headers, and body — with Ajv against what the spec
+actually declares.
+
+Needs the server running in a separate terminal first:
+
+```bash
+# terminal 1
+npm run build && npm start
+```
+
+```bash
+# terminal 2 — exits 0 only if every check is green
+npm run contract
+```

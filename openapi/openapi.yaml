@@ -44,7 +44,8 @@ paths:
           in: path
           required: true
           schema:
-            type: string
+            type: integer
+            minimum: 1
       responses:
         '200':
           description: The requested product.
@@ -52,6 +53,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Product'
+        '400':
+          description: Invalid productId.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '404':
           description: Product not found.
           content:
@@ -110,6 +117,7 @@ paths:
           headers:
             Location:
               description: URL of the newly created order.
+              required: true
               schema:
                 type: string
             Idempotency-Replay:
@@ -157,7 +165,8 @@ paths:
           in: path
           required: true
           schema:
-            type: string
+            type: integer
+            minimum: 1
       responses:
         '200':
           description: The requested order.
@@ -165,6 +174,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Order'
+        '400':
+          description: Invalid orderId.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
         '404':
           description: Order not found.
           content:
@@ -229,6 +244,12 @@ components:
             Opaque cursor for the next page, or null when there are no
             more pages.
 
+    Currency:
+      type: string
+      enum: [USD]
+      description: ISO 4217 currency code. Only USD is supported currently.
+      example: USD
+
     Product:
       type: object
       required:
@@ -239,15 +260,15 @@ components:
         - created_at
       properties:
         id:
-          type: string
+          type: integer
+          minimum: 1
         name:
           type: string
         price_cents:
           type: integer
           description: Price in the smallest currency unit (e.g. cents).
         currency:
-          type: string
-          example: USD
+          $ref: '#/components/schemas/Currency'
         created_at:
           type: string
           format: date-time
@@ -259,7 +280,8 @@ components:
         - quantity
       properties:
         productId:
-          type: string
+          type: integer
+          minimum: 1
         quantity:
           type: integer
           minimum: 1
@@ -275,7 +297,8 @@ components:
         - created_at
       properties:
         id:
-          type: string
+          type: integer
+          minimum: 1
         status:
           type: string
           enum: [unpaid, paid]
@@ -283,8 +306,7 @@ components:
           type: integer
           description: Total order amount in the smallest currency unit (e.g. cents).
         currency:
-          type: string
-          example: USD
+          $ref: '#/components/schemas/Currency'
         items:
           type: array
           items:

@@ -48,6 +48,7 @@ export default [
         Buffer: 'readonly',
         console: 'readonly',
         exports: 'writable',
+        fetch: 'readonly',
         global: 'readonly',
         module: 'readonly',
         process: 'readonly',
