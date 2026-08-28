@@ -124,6 +124,29 @@ const CHECKS = [
       },
     },
   },
+  {
+    name: 'POST /orders with unexpected body properties returns 400',
+    req: {
+      method: 'POST',
+      url: '/orders',
+      headers: {
+        'content-type': 'application/json',
+        'idempotency-key': getIdempotencyKey(),
+      },
+      body: JSON.stringify({
+        items: [{ productId: 1, quantity: 2 }],
+        unexpected: 'property',
+      }),
+    },
+    expect: {
+      path: '/orders',
+      method: 'post',
+      status: 400,
+      partialBody: {
+        detail: 'request/body must NOT have additional properties',
+      },
+    },
+  },
 ];
 
 const ajv = new Ajv({ strict: false, allErrors: true, validateFormats: true });

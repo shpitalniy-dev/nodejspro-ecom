@@ -13,7 +13,6 @@ import {
 
 import { IdempotencyKeyInterceptor } from '../../interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from '../../interceptors/location-header.interceptor.ts';
-import { NonEmptyItemsPipe } from '../../pipes/non-empty-items.pipe.ts';
 import { OrderService } from '../../services/order.service.ts';
 import type { CreateOrderBody } from '../../types/orders.types.ts';
 
@@ -32,7 +31,7 @@ export class OrdersController {
   @Post()
   @HttpCode(201)
   @UseInterceptors(LocationHeaderInterceptor, IdempotencyKeyInterceptor)
-  create(@Body(NonEmptyItemsPipe) body: CreateOrderBody) {
+  create(@Body() body: CreateOrderBody) {
     return this.orderService.create(body.items);
   }
 
