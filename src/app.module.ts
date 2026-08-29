@@ -7,6 +7,7 @@ import { OrdersController } from './controllers/orders/orders.controller.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
 import { IdempotencyKeyInterceptor } from './interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from './interceptors/location-header.interceptor.ts';
+import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
 import { OrderService } from './services/order.service.ts';
 import { ProductService } from './services/product.service.ts';
@@ -19,6 +20,7 @@ import { ProductService } from './services/product.service.ts';
     IdempotencyStore,
     IdempotencyKeyInterceptor,
     LocationHeaderInterceptor,
+    DatabaseService,
   ],
   imports: [
     ConfigModule.forRoot({

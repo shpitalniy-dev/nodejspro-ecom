@@ -6,6 +6,8 @@ services:
       target: runner
     env_file:
       - .env
+    secrets:
+      - db_password
     init: true
     restart: unless-stopped
     logging:
@@ -13,6 +15,9 @@ services:
       options:
         max-size: 10m
         max-file: '5'
+    depends_on:
+      postgres:
+        condition: service_healthy
     deploy:
       resources:
         limits:
@@ -21,3 +26,38 @@ services:
         reservations:
           cpus: '0.25'
           memory: 300M
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+    environment:
+      POSTGRES_USER: admin
+      POSTGRES_PASSWORD: admin-bootstrap-password
+      POSTGRES_DB: ecom
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U admin -d ecom']
+      interval: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.25'
+          memory: 256M
+
+volumes:
+  postgres_data:
+
+secrets:
+  db_password:
+    file: ./secrets/db_password
