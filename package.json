@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "check:env": "node scripts/check-env-example.js",
     "contract": "node contract/check.js",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",
