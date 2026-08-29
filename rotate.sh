@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
+cd "$(dirname "${BASH_SOURCE[0]}")"
 
 NEW_PASSWORD="app-$(openssl rand -hex 8)"
 
