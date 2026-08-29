@@ -4,6 +4,8 @@ services:
     build:
       context: .
       target: runner
+    env_file:
+      - .env
     init: true
     restart: unless-stopped
     logging:

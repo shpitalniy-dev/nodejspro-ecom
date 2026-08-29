@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 
+import { validate } from './config/env.schema.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
 import { OrdersController } from './controllers/orders/orders.controller.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
@@ -17,6 +19,12 @@ import { ProductService } from './services/product.service.ts';
     IdempotencyStore,
     IdempotencyKeyInterceptor,
     LocationHeaderInterceptor,
+  ],
+  imports: [
+    ConfigModule.forRoot({
+      isGlobal: true,
+      validate,
+    }),
   ],
 })
 export class AppModule {}
