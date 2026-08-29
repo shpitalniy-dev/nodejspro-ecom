@@ -182,7 +182,7 @@ The password lives in `secrets/db_password` (git-ignored, mounted into the
 frozen at startup. Rotating it doesn't touch the running process at all.
 
 ```bash
-bash database/rotate.sh
+bash rotate.sh
 ```
 
 In order (the order matters — see comments in the script):
@@ -195,7 +195,7 @@ To see it happen without a restart:
 
 ```bash
 curl -s localhost:3000/health/db      # note the uptime
-bash database/rotate.sh
+bash rotate.sh
 curl -s localhost:3000/health/db   # → 200, connects with the *new* password
 curl -s localhost:3000/health/db      # uptime is higher — same process, never restarted
 ```
