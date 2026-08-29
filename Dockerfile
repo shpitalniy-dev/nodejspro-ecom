@@ -18,4 +18,5 @@ RUN npm ci --omit=dev --ignore-scripts --no-audit --no-fund
 ENV NODE_ENV=production
 USER node
 COPY --from=builder /app/build ./build
+COPY --from=builder /app/openapi ./openapi
 CMD ["node", "./build/index.js"]
