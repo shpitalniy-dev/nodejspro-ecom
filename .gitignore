@@ -16,6 +16,10 @@ node_modules
 # Secrets
 secrets
 
+# Infisical bootstrap output — admin password, machine identity credentials,
+# cached access token. Regenerated fresh by infisical/up.sh each time.
+infisical/.secrets
+
 # Turbo (leftover from monorepo tooling, harmless if unused)
 .turbo
 

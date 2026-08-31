@@ -1,0 +1,64 @@
+# Bonus (no points): self-hosted Infisical — a standalone stand, kept fully
+# separate from the app's own `postgres`/`api` services in the root
+# docker-compose.yml. Nothing here is wired into the graded HW #11 submission.
+#
+# Three containers: Infisical itself (API + UI), its own Postgres, and Redis.
+# Only the app's port is published — the storage layer has no door outward.
+name: nodejspro-ecom-infisical
+
+services:
+  db:
+    image: postgres:14-alpine
+    environment:
+      POSTGRES_USER: infisical
+      POSTGRES_PASSWORD: infisical-local-only
+      POSTGRES_DB: infisical
+    volumes:
+      - infisical_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U infisical -d infisical']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  app:
+    image: infisical/infisical:v0.162.19
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - '127.0.0.1:8090:8080'
+    environment:
+      # ENCRYPTION_KEY / AUTH_SECRET are "secrets of the secret store" itself.
+      # Hardcoded here on purpose — this is a disposable local stand torn down
+      # by down.sh. In real deployments both come from a KMS/HSM; losing them
+      # means losing the ability to decrypt everything the store holds.
+      ENCRYPTION_KEY: 580198cd5941dc0aa535f1fbea9cb441
+      AUTH_SECRET: g+q5wM96lXTOEkG0jAbFhUZXAxZ7gQXmECWVywuoQKA=
+      DB_CONNECTION_URI: postgres://infisical:infisical-local-only@db:5432/infisical
+      REDIS_URL: redis://redis:6379
+      SITE_URL: http://localhost:8090
+      TELEMETRY_ENABLED: 'false'
+    healthcheck:
+      test:
+        [
+          'CMD-SHELL',
+          'wget -qO- http://127.0.0.1:8080/api/status >/dev/null || exit 1',
+        ]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 20s
+
+volumes:
+  infisical_pgdata:
