@@ -1,0 +1,17 @@
+infisical:
+  address: 'https://app.infisical.com'
+
+auth:
+  type: 'universal-auth'
+  config:
+    client-id: /etc/infisical/configs/client_id
+    client-secret: /run/secrets/infisical_client_secret
+
+templates:
+  - source-path: /tmp/rendered/db-password-template.txt
+    destination-path: /shared-secrets/db-password
+    config:
+      polling-interval: '60s'
+      execute:
+        command: '/etc/infisical/on-change.sh'
+        timeout: 30

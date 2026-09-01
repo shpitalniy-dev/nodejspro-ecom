@@ -125,19 +125,23 @@ read goes through the typed `ConfigService<Env, true>`.
 
 ### Environment variables
 
-| Variable           | Default                 | Required | Description                                                         |
-| ------------------ | ----------------------- | :------: | ------------------------------------------------------------------- |
-| `PORT`             | —                       |    ✅    | HTTP port the server listens on.                                    |
-| `LOG_LEVEL`        | `info`                  |          | One of `debug`, `info`, `warn`, `error`.                            |
-| `TIMEOUT_MS`       | `5000`                  |          | Timeout budget for outbound calls, in ms.                           |
-| `DB_HOST`          | `postgres`              |          | Postgres host — the compose service name, resolved via Docker DNS.  |
-| `DB_PORT`          | `5432`                  |          | Postgres port.                                                      |
-| `DB_NAME`          | `ecom`                  |          | Database name.                                                      |
-| `DB_USER`          | `app_user`              |          | Postgres role the app connects as (created by `database/init.sql`). |
-| `DB_PASSWORD_FILE` | `./secrets/db_password` |          | Path to the file holding the _current_ DB password.                 |
+| Variable           | Default    | Required | Description                                                         |
+| ------------------ | ---------- | :------: | ------------------------------------------------------------------- |
+| `PORT`             | —          |    ✅    | HTTP port the server listens on.                                    |
+| `LOG_LEVEL`        | `info`     |          | One of `debug`, `info`, `warn`, `error`.                            |
+| `TIMEOUT_MS`       | `5000`     |          | Timeout budget for outbound calls, in ms.                           |
+| `DB_HOST`          | `postgres` |          | Postgres host — the compose service name, resolved via Docker DNS.  |
+| `DB_PORT`          | `5432`     |          | Postgres port.                                                      |
+| `DB_NAME`          | `ecom`     |          | Database name.                                                      |
+| `DB_USER`          | `app_user` |          | Postgres role the app connects as (created by `database/init.sql`). |
+| `DB_PASSWORD_FILE` | —          |    ✅    | Path to the file holding the _current_ DB password.                 |
 
 The DB password itself is **never** an env var — see [Rotate the DB
 password](#rotate-the-db-password-without-restarting) below for why.
+`DB_PASSWORD_FILE` points at `/shared-secrets/db-password`, kept current by
+`infisical-agent` — Infisical Cloud is the actual source of truth for this
+value now, not a locally-managed file. See [`infisical/README.md`](infisical/README.md)
+for the full mechanism.
 
 `.env.example` is the checked-in contract: every schema variable is listed
 there (secrets get fake placeholders). The real `.env` is git-ignored.
@@ -159,10 +163,15 @@ make dev-up   # docker compose up --build -V — starts api + postgres
 On the very first boot, Postgres has an empty data volume, so
 `database/init.sql` runs once and creates the `app_user` role. On every
 later boot that volume already has data, so Postgres skips init scripts
-entirely — if you ever reset the DB with `docker compose down -v`, the role
-comes back with `init.sql`'s starting password, so `secrets/db_password`
-must be reset to match it (see the file for the exact value) or the app's
-first connection fails.
+entirely. This used to mean resetting the DB with `docker compose down -v`
+required manually resyncing a local secret file — that's no longer true:
+`infisical-agent` clears its own rendered output and resyncs Postgres to
+whatever Infisical currently holds on every startup, so a fresh
+`init.sql` password and Infisical's stored value being out of sync corrects
+itself automatically, before `api` is ever allowed to start (`api` depends
+on `infisical-agent`'s healthcheck, which only passes once the current
+password genuinely works). See [`infisical/README.md`](infisical/README.md)
+for the full mechanism.
 
 Verify fail-fast works — a missing required variable kills the process with
 a clear reason and a non-zero exit code, instead of dying on the first
@@ -176,8 +185,8 @@ mv /tmp/env.bak .env
 
 ### Rotate the DB password without restarting
 
-The password lives in `secrets/db_password` (git-ignored, mounted into the
-`api` container as a Compose secret), and `pg.Pool`'s `password` option is a
+The password lives in a file `infisical-agent` keeps current
+(`/shared-secrets/db-password`), and `pg.Pool`'s `password` option is a
 **function** that re-reads that file on every new connection — not a string
 frozen at startup. Rotating it doesn't touch the running process at all.
 
@@ -185,11 +194,17 @@ frozen at startup. Rotating it doesn't touch the running process at all.
 bash rotate.sh
 ```
 
-In order (the order matters — see comments in the script):
+This is now a thin wrapper around [`infisical/rotate.sh`](infisical/rotate.sh) —
+rotating a Postgres-specific credential directly, bypassing Infisical, would
+just get overwritten by `infisical-agent`'s own reconciliation the moment it
+next polls. The actual flow:
 
-1. `ALTER ROLE app_user WITH PASSWORD '…'` — the new password becomes true in Postgres.
-2. Overwrite `secrets/db_password` — any _new_ pool connection now picks it up.
-3. `pg_terminate_backend` on `app_user`'s existing connections — forces the pool to open fresh ones, which pick up the file from step 2.
+1. `rotate.sh` pushes a new `DB_PASSWORD` value to Infisical Cloud — it never touches Postgres itself.
+2. `infisical-agent` notices the change and re-renders the file.
+3. That triggers `infisical/on-change.sh`, which runs `ALTER ROLE app_user WITH PASSWORD '…'` (the new password becomes true in Postgres) and then `pg_terminate_backend` on `app_user`'s existing connections — forcing the pool to open fresh ones, which pick up the file from step 2.
+
+Full mechanism, including why it's split this way and the failure mode that
+shaped it: [`infisical/README.md`](infisical/README.md).
 
 To see it happen without a restart:
 
