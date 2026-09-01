@@ -8,15 +8,7 @@ export const envSchema = z.object({
   DB_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
   DB_NAME: z.string().min(1).default('ecom'),
   DB_USER: z.string().min(1).default('app_user'),
-  DB_PASSWORD_FILE: z.string().min(1).default('./secrets/db_password'),
-  INFISICAL_DEMO_SECRET_FILE: z
-    .string()
-    .min(1)
-    .default('/shared-secrets/demo-secret'),
-  DB_PASSWORD_FILE_INFISICAL: z
-    .string()
-    .min(1)
-    .default('/shared-secrets/db-password'),
+  DB_PASSWORD_FILE: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;

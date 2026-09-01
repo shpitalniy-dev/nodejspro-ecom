@@ -11,8 +11,6 @@ services:
       target: runner
     env_file:
       - .env
-    secrets:
-      - db_password
     init: true
     restart: unless-stopped
     logging:
@@ -78,7 +76,6 @@ services:
       - ./infisical/entrypoint.sh:/etc/infisical/entrypoint.sh:ro
       - ./infisical/configs/project_id:/etc/infisical/configs/project_id:ro
       - ./infisical/configs/client_id:/etc/infisical/configs/client_id:ro
-      - ./infisical/templates/template.txt:/etc/infisical/templates/template.txt:ro
       - ./infisical/templates/db-password-template.txt:/etc/infisical/templates/db-password-template.txt:ro
       - ./infisical/on-change.sh:/etc/infisical/on-change.sh:ro
       - ./infisical/reconcile.sh:/etc/infisical/reconcile.sh:ro
@@ -90,7 +87,7 @@ services:
       test:
         - CMD-SHELL
         - >-
-          test -s /shared-secrets/demo-secret &&
+          test -s /shared-secrets/db-password &&
           PGPASSWORD="$(cat /shared-secrets/db-password)" psql -h postgres -U app_user -d ecom -c "SELECT 1" >/dev/null 2>&1
       interval: 3s
       retries: 20
@@ -101,7 +98,5 @@ volumes:
   infisical_secrets:
 
 secrets:
-  db_password:
-    file: ./secrets/db_password
   infisical_client_secret:
     file: ./infisical/secrets/client_secret

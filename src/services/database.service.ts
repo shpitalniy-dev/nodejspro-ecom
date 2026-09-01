@@ -10,7 +10,7 @@ export class DatabaseService implements OnModuleDestroy {
   private readonly pool: Pool;
 
   constructor(config: ConfigService<Env, true>) {
-    const passwordFile = config.get('DB_PASSWORD_FILE_INFISICAL', {
+    const passwordFile = config.get('DB_PASSWORD_FILE', {
       infer: true,
     });
 

@@ -17,7 +17,6 @@ reads a file, exactly like it already does for `DB_PASSWORD_FILE`.
 | `on-change.sh`                       | in-container                | Syncs Postgres to whatever's currently in the rendered file. Safe to call repeatedly — no-op if Postgres already matches |
 | `reconcile.sh`                       | in-container, once at start | Backup path: waits (bounded, up to 60s) for the Agent's first render, then calls `on-change.sh` once                     |
 | `rotate.sh`                          | on the host                 | Pushes a new `DB_PASSWORD` value to Infisical Cloud. Doesn't touch Postgres itself                                       |
-| `templates/template.txt`             | in-container                | Renders `DEMO_SECRET`'s value — a standalone proof-of-mechanism, not consumed anywhere                                   |
 | `templates/db-password-template.txt` | in-container                | Renders `DB_PASSWORD`'s value — this is the one that matters                                                             |
 | `configs/project_id`                 | committed                   | Infisical project ID — not a secret, safe to commit (grants no access alone)                                             |
 | `configs/client_id`                  | committed                   | The reader identity's client ID — not a secret either, same reasoning                                                    |
@@ -72,7 +71,7 @@ _same_ content as what's already on disk — from its point of view, nothing
 changed, so the hook never fires, and Postgres never gets corrected.
 
 `entrypoint.sh` fixes the root cause directly: it deletes
-`/shared-secrets/demo-secret` and `/shared-secrets/db-password` before the
+`/shared-secrets/db-password` before the
 Agent ever starts, so its first render this container instance is always a
 transition from nothing to something — guaranteeing the hook fires on every
 startup. `reconcile.sh` stays on top of that as an independent check,
@@ -104,8 +103,7 @@ against a password that doesn't actually work yet.
 ## One-time setup (in Infisical Cloud, done manually)
 
 1. Create a project, note its ID → `configs/project_id`.
-2. Add a `DB_PASSWORD` secret (and `DEMO_SECRET`, for the standalone proof)
-   to the `dev` environment.
+2. Add a `DB_PASSWORD` secret to the `dev` environment.
 3. Create the reader identity (Universal Auth, `viewer` role) →
    `configs/client_id` / `secrets/client_secret`.
 4. Create the rotator identity (Universal Auth, write role) →

@@ -1,1 +1,0 @@
-{{ (getSecretByName "__PROJECT_ID__" "__ENV__" "/" "DEMO_SECRET").Value }}

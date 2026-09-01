@@ -8,10 +8,6 @@ auth:
     client-secret: /run/secrets/infisical_client_secret
 
 templates:
-  - source-path: /tmp/rendered/template.txt
-    destination-path: /shared-secrets/demo-secret
-    config:
-      polling-interval: '60s'
   - source-path: /tmp/rendered/db-password-template.txt
     destination-path: /shared-secrets/db-password
     config:
