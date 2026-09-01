@@ -1,3 +1,8 @@
+x-postgres-admin-creds: &postgres-admin-creds
+  POSTGRES_USER: admin
+  POSTGRES_PASSWORD: admin-bootstrap-password
+  POSTGRES_DB: ecom
+
 services:
   api:
     image: nodejspro-ecom-api:prod
@@ -15,8 +20,12 @@ services:
       options:
         max-size: 10m
         max-file: '5'
+    volumes:
+      - infisical_secrets:/shared-secrets:ro
     depends_on:
       postgres:
+        condition: service_healthy
+      infisical-agent:
         condition: service_healthy
     deploy:
       resources:
@@ -36,9 +45,7 @@ services:
         max-size: 10m
         max-file: '3'
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: admin-bootstrap-password
-      POSTGRES_DB: ecom
+      <<: *postgres-admin-creds
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -55,9 +62,46 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  infisical-agent:
+    build:
+      context: ./infisical
+    restart: unless-stopped
+    init: true
+    entrypoint: ['/bin/sh', '/etc/infisical/entrypoint.sh']
+    secrets:
+      - infisical_client_secret
+    environment:
+      <<: *postgres-admin-creds
+      INFISICAL_ENV: prod
+    volumes:
+      - ./infisical/agent-config.yaml:/etc/infisical/agent-config.yaml:ro
+      - ./infisical/entrypoint.sh:/etc/infisical/entrypoint.sh:ro
+      - ./infisical/configs/project_id:/etc/infisical/configs/project_id:ro
+      - ./infisical/configs/client_id:/etc/infisical/configs/client_id:ro
+      - ./infisical/templates/template.txt:/etc/infisical/templates/template.txt:ro
+      - ./infisical/templates/db-password-template.txt:/etc/infisical/templates/db-password-template.txt:ro
+      - ./infisical/on-change.sh:/etc/infisical/on-change.sh:ro
+      - ./infisical/reconcile.sh:/etc/infisical/reconcile.sh:ro
+      - infisical_secrets:/shared-secrets
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          test -s /shared-secrets/demo-secret &&
+          PGPASSWORD="$(cat /shared-secrets/db-password)" psql -h postgres -U app_user -d ecom -c "SELECT 1" >/dev/null 2>&1
+      interval: 3s
+      retries: 20
+      start_period: 5s
+
 volumes:
   postgres_data:
+  infisical_secrets:
 
 secrets:
   db_password:
     file: ./secrets/db_password
+  infisical_client_secret:
+    file: ./infisical/secrets/client_secret

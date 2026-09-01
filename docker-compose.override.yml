@@ -20,3 +20,7 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+
+  infisical-agent:
+    environment:
+      INFISICAL_ENV: dev
