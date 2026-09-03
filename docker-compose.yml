@@ -5,7 +5,13 @@ services:
       context: .
       target: runner
     env_file:
-      - .env
+      # required: false — a fresh clone has no .env yet (gitignored by
+      # design). Without this, *any* `docker compose` command fails outright
+      # ("env file .env not found"), even one scoped only to `postgres` —
+      # Compose validates every service's config up front, not just the one
+      # you're targeting.
+      - path: .env
+        required: false
     secrets:
       - db_password
     init: true
@@ -43,7 +49,7 @@ services:
       POSTGRES_DB: ecom
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./database/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U admin -d ecom']
       interval: 3s

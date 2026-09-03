@@ -1,0 +1,112 @@
+-- Realistic-volume seed data
+-- Every insert is one set-based statement over generate_series — no
+-- per-row PL/pgSQL loop. Distributions are deliberately skewed (see the
+-- comment on each table) instead of uniform, so EXPLAIN has something real
+-- to say later.
+
+-- ~5,000 users. Not the head table, so no special skew needed here.
+INSERT INTO users (name, email, created_at)
+SELECT
+  'User ' || i,
+  'user' || i || '@example.com',
+  now() - (random() * interval '730 days')
+FROM generate_series(1, 5000) AS i;
+
+-- ~1,000 products.
+INSERT INTO products (key, price_cents, currency, created_at)
+SELECT
+  'SKU-' || i,
+  (500 + floor(random() * 20000))::int,
+  'USD',
+  now() - (random() * interval '730 days')
+FROM generate_series(1, 1000) AS i;
+
+-- 200,000 orders — the head table (well past the 100k floor). Three
+-- deliberate skews, none of them 33/33/33:
+--   * status: mostly 'paid', a real tail of 'pending'/'unpaid'/'canceled'/
+--     'refunded'.
+--   * user_id: power-law-ish — most orders belong to a minority of users.
+--     user_id = 1 is a reserved "hero" account: guaranteed 500 rows from the
+--     i % 400 = 0 forcing below, plus whatever the power(random(), 2) skew
+--     also lands on it by chance (which turns out to be a lot more —
+--     observed ~3,000-4,000 total orders on a real seeded run, not just the
+--     500 forced ones), so the "search by owner" query stays reproducibly
+--     non-trivial across re-seeds instead of depending on where pure
+--     randomness happens to land.
+--   * created_at: spread over ~19 months, with only ~8% falling in the last
+--     30 days — makes "status = X AND created_at >= now() - 30 days"
+--     genuinely selective rather than a coin flip.
+-- All volatile draws (amount, discount_rate, status_roll, time_offset) are
+-- computed once per row in the inner subquery, then only referenced (never
+-- re-rolled) in the outer SELECT — random() evaluates independently on
+-- every reference, so rolling it again per derived column would silently
+-- decorrelate status/amount/discount from each other.
+INSERT INTO orders (user_id, currency, amount_cents, discount_cents, status, created_at)
+SELECT
+  CASE WHEN i % 400 = 0 THEN 1
+       ELSE (1 + floor(4999 * power(random(), 2)))::int
+  END,
+  'USD',
+  amount,
+  (floor(amount * discount_rate))::int,
+  CASE
+    WHEN status_roll < 0.70 THEN 'paid'
+    WHEN status_roll < 0.80 THEN 'pending'
+    WHEN status_roll < 0.90 THEN 'unpaid'
+    WHEN status_roll < 0.96 THEN 'canceled'
+    ELSE 'refunded'
+  END,
+  now() - time_offset
+FROM (
+  SELECT
+    i,
+    (500 + floor(random() * 49500))::int AS amount,
+    (CASE WHEN random() < 0.3 THEN random() * 0.2 ELSE 0 END) AS discount_rate,
+    random() AS status_roll,
+    CASE WHEN random() < 0.08
+         THEN random() * interval '30 days'
+         ELSE interval '30 days' + random() * interval '540 days'
+    END AS time_offset
+  FROM generate_series(1, 200000) AS i
+) base;
+
+-- order_items: 1-4 lines per order, skewed toward 1-2. price/currency are
+-- snapshotted from the product at insert time — matches the schema's
+-- intentional denormalization (see db/schema.sql), not a duplicate to clean
+-- up.
+--
+-- The `WHERE ... IS NOT NULL` in each LATERAL below is load-bearing, not
+-- dead code: a LATERAL subquery that never actually references a column
+-- from the preceding FROM item can still be planned as a one-time subplan,
+-- evaluated ONCE for the whole query and reused for every outer row —
+-- volatile functions like random() don't prevent this, because the
+-- decision is about correlation, not volatility. Without these dummy
+-- references, every order ended up with exactly 1 item, always the same
+-- product, always the same quantity (verified against a live run — this
+-- was a real bug here, not a hypothetical one). Referencing the preceding
+-- row forces genuine per-row re-evaluation.
+INSERT INTO order_items (key, currency, price_cents, quantity, product_id, order_id)
+SELECT p.key, p.currency, p.price_cents, q.quantity, p.id, o.id
+FROM orders o
+CROSS JOIN LATERAL (
+  SELECT (1 + floor(random() * random() * 4))::int AS item_count
+  WHERE o.id IS NOT NULL
+) ic
+CROSS JOIN LATERAL generate_series(1, ic.item_count) AS line(n)
+CROSS JOIN LATERAL (
+  SELECT id, key, currency, price_cents
+  FROM products
+  WHERE line.n IS NOT NULL
+  ORDER BY random()
+  LIMIT 1
+) p
+CROSS JOIN LATERAL (
+  SELECT (1 + floor(random() * random() * 4))::int AS quantity
+  WHERE line.n IS NOT NULL
+) q;
+
+-- VACUUM (ANALYZE), not bare ANALYZE: ANALYZE alone gives the planner fresh
+-- statistics, but only VACUUM updates the visibility map. Without it, an
+-- Index Only Scan in a later "after" EXPLAIN would still show non-zero
+-- Heap Fetches, and buffers would be far worse than they need to be.
+VACUUM (ANALYZE);

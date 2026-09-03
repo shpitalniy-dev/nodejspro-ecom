@@ -13,6 +13,13 @@ export const envSchema = z.object({
   // accident, because dev also bind-mounts the whole repo. Prod has no such
   // bind mount, so a relative path is unreachable there.
   DB_PASSWORD_FILE: z.string().min(1).default('/run/secrets/db_password'),
+  // Full connection string — not read anywhere in the app itself
+  // (DatabaseService still uses the discrete vars above + the rotating
+  // password file, since a static string can't survive rotate.sh changing
+  // the password without a restart). Exists for external tooling only —
+  // psql one-liners, a future ORM CLI — see the Configuration table in
+  // README.md for where its real value comes from.
+  DB_URL: z.string().url(),
 });
 
 export type Env = z.infer<typeof envSchema>;
