@@ -53,6 +53,7 @@ export default [
         module: 'readonly',
         process: 'readonly',
         require: 'readonly',
+        URL: 'readonly',
         setTimeout: 'readonly',
         clearTimeout: 'readonly',
         setInterval: 'readonly',
