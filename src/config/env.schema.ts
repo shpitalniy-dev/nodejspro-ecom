@@ -9,6 +9,13 @@ export const envSchema = z.object({
   DB_NAME: z.string().min(1).default('ecom'),
   DB_USER: z.string().min(1).default('app_user'),
   DB_PASSWORD_FILE: z.string().min(1).default('./secrets/db_password'),
+  // Full connection string — not read anywhere in the app itself
+  // (DatabaseService still uses the discrete vars above + the rotating
+  // password file, since a static string can't survive rotate.sh changing
+  // the password without a restart). Exists for external tooling only —
+  // psql one-liners, a future ORM CLI — see the Configuration table in
+  // README.md for where its real value comes from.
+  DB_URL: z.string().url(),
 });
 
 export type Env = z.infer<typeof envSchema>;

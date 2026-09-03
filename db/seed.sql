@@ -26,9 +26,12 @@ FROM generate_series(1, 1000) AS i;
 --   * status: mostly 'paid', a real tail of 'pending'/'unpaid'/'canceled'/
 --     'refunded'.
 --   * user_id: power-law-ish — most orders belong to a minority of users.
---     user_id = 1 is a reserved "hero" account guaranteed a known, moderate
---     slice (~500+ orders), so the "search by owner" query stays
---     reproducible across re-seeds instead of depending on where pure
+--     user_id = 1 is a reserved "hero" account: guaranteed 500 rows from the
+--     i % 400 = 0 forcing below, plus whatever the power(random(), 2) skew
+--     also lands on it by chance (which turns out to be a lot more —
+--     observed ~3,000-4,000 total orders on a real seeded run, not just the
+--     500 forced ones), so the "search by owner" query stays reproducibly
+--     non-trivial across re-seeds instead of depending on where pure
 --     randomness happens to land.
 --   * created_at: spread over ~19 months, with only ~8% falling in the last
 --     30 days — makes "status = X AND created_at >= now() - 30 days"

@@ -125,19 +125,32 @@ read goes through the typed `ConfigService<Env, true>`.
 
 ### Environment variables
 
-| Variable           | Default                 | Required | Description                                                         |
-| ------------------ | ----------------------- | :------: | ------------------------------------------------------------------- |
-| `PORT`             | —                       |    ✅    | HTTP port the server listens on.                                    |
-| `LOG_LEVEL`        | `info`                  |          | One of `debug`, `info`, `warn`, `error`.                            |
-| `TIMEOUT_MS`       | `5000`                  |          | Timeout budget for outbound calls, in ms.                           |
-| `DB_HOST`          | `postgres`              |          | Postgres host — the compose service name, resolved via Docker DNS.  |
-| `DB_PORT`          | `5432`                  |          | Postgres port.                                                      |
-| `DB_NAME`          | `ecom`                  |          | Database name.                                                      |
-| `DB_USER`          | `app_user`              |          | Postgres role the app connects as (created by `database/init.sql`). |
-| `DB_PASSWORD_FILE` | `./secrets/db_password` |          | Path to the file holding the _current_ DB password.                 |
+| Variable           | Default                 | Required | Description                                                        |
+| ------------------ | ----------------------- | :------: | ------------------------------------------------------------------ |
+| `PORT`             | —                       |    ✅    | HTTP port the server listens on.                                   |
+| `LOG_LEVEL`        | `info`                  |          | One of `debug`, `info`, `warn`, `error`.                           |
+| `TIMEOUT_MS`       | `5000`                  |          | Timeout budget for outbound calls, in ms.                          |
+| `DB_HOST`          | `postgres`              |          | Postgres host — the compose service name, resolved via Docker DNS. |
+| `DB_PORT`          | `5432`                  |          | Postgres port.                                                     |
+| `DB_NAME`          | `ecom`                  |          | Database name.                                                     |
+| `DB_USER`          | `app_user`              |          | Postgres role the app connects as (created by `db/init.sql`).      |
+| `DB_PASSWORD_FILE` | `./secrets/db_password` |          | Path to the file holding the _current_ DB password.                |
+| `DB_URL`           | —                       |    ✅    | Full connection string. Not read by the app itself — see below.    |
 
-The DB password itself is **never** an env var — see [Rotate the DB
+The DB password itself is **never** an env var for the app's own
+connection — see [Rotate the DB
 password](#rotate-the-db-password-without-restarting) below for why.
+
+`DB_URL` is the one exception, and it's deliberately not wired into
+`DatabaseService`: a single connection string bakes the password in as a
+frozen value, which can't survive `rotate.sh` changing it without a
+restart. It exists for external tools that expect the standard
+`postgres://user:password@host:port/db` shape — a `psql "$DB_URL"`
+one-liner, a future ORM CLI running migrations — not for the running app,
+so it authenticates as `admin`, not `app_user`: migrations need `CREATE`
+rights `app_user` doesn't have (see [Connect](#connect) under Data Layer —
+same reasoning as running `db/schema.sql` as `admin`). `.env.example`
+carries a fake password, same as every other secret-shaped value there.
 
 `.env.example` is the checked-in contract: every schema variable is listed
 there (secrets get fake placeholders). The real `.env` is git-ignored.
@@ -157,7 +170,7 @@ make dev-up   # docker compose up --build -V — starts api + postgres
 ```
 
 On the very first boot, Postgres has an empty data volume, so
-`database/init.sql` runs once and creates the `app_user` role. On every
+`db/init.sql` runs once and creates the `app_user` role. On every
 later boot that volume already has data, so Postgres skips init scripts
 entirely — if you ever reset the DB with `docker compose down -v`, the role
 comes back with `init.sql`'s starting password, so `secrets/db_password`
@@ -198,4 +211,95 @@ curl -s localhost:3000/health/db      # note the uptime
 bash rotate.sh
 curl -s localhost:3000/health/db   # → 200, connects with the *new* password
 curl -s localhost:3000/health/db      # uptime is higher — same process, never restarted
+```
+
+## Data Layer | HW #12
+
+Schema, seed, and index-tuning for the data layer, proven against real
+volume instead of an empty dev database. Full before/after
+`EXPLAIN (ANALYZE, BUFFERS)` output and reasoning for each query lives in
+[`db/OPTIMIZATIONS.md`](db/OPTIMIZATIONS.md).
+
+**Head table: `orders`** — 200,000 rows after seeding; that's the table the
+row-count and Seq Scan / Index Scan checks below run against.
+
+| File                                    | Purpose                                                                                                                |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `db/schema.sql`                         | Tables + constraints — `users`, `products`, `orders`, `order_items`, 3 foreign keys                                    |
+| `db/seed.sql`                           | Realistic, skewed volume via `generate_series`; ends in `VACUUM (ANALYZE);`, not bare `ANALYZE;`                       |
+| `db/queries/q1.sql`, `q2.sql`, `q3.sql` | One real query per file, one statement each                                                                            |
+| `db/indexes.sql`                        | The minimal index set that fixes all three queries — includes a partial and an expression index                        |
+| `db/explain.sh`                         | Runs `EXPLAIN (ANALYZE, BUFFERS)` for all three queries — same script, run once before `db/indexes.sql` and once after |
+| `db/OPTIMIZATIONS.md`                   | Before/after `EXPLAIN (ANALYZE, BUFFERS)` per query, with what changed and why                                         |
+
+### Bring up Postgres
+
+```bash
+docker compose up -d --wait postgres
+```
+
+Scoped to `postgres` alone on purpose: the `api` service needs `.env` and
+`secrets/db_password`, and neither exists on a fresh clone — that's the
+app's runtime credential from [Configuration](#configuration--hw-11),
+gitignored by design. Postgres itself boots on the dev credentials already
+inline in `docker-compose.yml` (`admin` / `admin-bootstrap-password`), so
+this line needs nothing copied or edited first.
+
+### Connect
+
+```bash
+docker compose exec -T postgres psql -U admin -d ecom
+```
+
+Everything below runs as `admin`, not `app_user` — `app_user` only has
+`CONNECT` on the database (see `db/init.sql`), by design: it's the app's
+least-privilege runtime credential, not a role meant to run DDL or bulk
+seeding.
+
+### Run the full pipeline
+
+```bash
+# 1. schema
+docker compose exec -T postgres psql -U admin -d ecom < db/schema.sql
+
+# 2. seed — 200k orders, skewed distributions, ends in VACUUM (ANALYZE)
+docker compose exec -T postgres psql -U admin -d ecom < db/seed.sql
+
+# 3. "before" — each of the three should show a Seq Scan
+bash db/explain.sh
+
+# 4. indexes, then refresh planner stats
+docker compose exec -T postgres psql -U admin -d ecom < db/indexes.sql
+docker compose exec -T postgres psql -U admin -d ecom -c "ANALYZE;"
+
+# 5. "after" — same three queries, no Seq Scan left
+bash db/explain.sh
+```
+
+### Self-check before submitting
+
+The same clean-volume cycle the grader runs — worth confirming yourself
+rather than assuming it works:
+
+```bash
+docker compose down -v
+docker compose up -d --wait postgres
+
+docker compose exec -T postgres psql -U admin -d ecom < db/schema.sql
+docker compose exec -T postgres psql -U admin -d ecom -Atc \
+  "SELECT count(*) FROM information_schema.table_constraints WHERE constraint_type='FOREIGN KEY' AND table_schema='public';"
+  # expect ≥ 3
+
+docker compose exec -T postgres psql -U admin -d ecom < db/seed.sql
+docker compose exec -T postgres psql -U admin -d ecom -Atc "SELECT count(*) FROM orders;"
+  # expect ≥ 100000
+
+docker compose exec -T postgres psql -U admin -d ecom < db/indexes.sql
+docker compose exec -T postgres psql -U admin -d ecom -c "ANALYZE;"
+docker compose exec -T postgres psql -U admin -d ecom -Atc \
+  "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND (indexdef ILIKE '% WHERE %' OR indexdef ~ '\((\w+)\(');"
+  # expect ≥ 1 (the partial + expression indexes)
+
+docker compose exec -T postgres psql -U admin -d ecom -Atc "SELECT 1"
+  # expect 1 — the fresh-clone check
 ```
