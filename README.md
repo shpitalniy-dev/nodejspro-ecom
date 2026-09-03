@@ -296,6 +296,9 @@ rather than assuming it works:
 docker compose down -v
 docker compose up -d --wait postgres
 
+docker compose exec -T postgres psql -U admin -d ecom -Atc "SELECT 1"
+  # expect 1 — the fresh-clone check
+
 docker compose exec -T postgres psql -U admin -d ecom < db/schema.sql
 docker compose exec -T postgres psql -U admin -d ecom -Atc \
   "SELECT count(*) FROM information_schema.table_constraints WHERE constraint_type='FOREIGN KEY' AND table_schema='public';"
@@ -311,6 +314,8 @@ docker compose exec -T postgres psql -U admin -d ecom -Atc \
   "SELECT count(*) FROM pg_indexes WHERE schemaname='public' AND (indexdef ILIKE '% WHERE %' OR indexdef ~ '\((\w+)\(');"
   # expect ≥ 1 (the partial + expression indexes)
 
-docker compose exec -T postgres psql -U admin -d ecom -Atc "SELECT 1"
-  # expect 1 — the fresh-clone check
+bash db/explain.sh   # actually run q1-q3 so idx_scan reflects real usage
+
+docker compose exec -T postgres psql -U admin -d ecom -Atc \
+  "SELECT indexrelname, idx_scan FROM pg_stat_user_indexes WHERE idx_scan = 0;"
 ```

@@ -73,25 +73,36 @@ FROM (
 -- order_items: 1-4 lines per order, skewed toward 1-2. price/currency are
 -- snapshotted from the product at insert time — matches the schema's
 -- intentional denormalization (see db/schema.sql), not a duplicate to clean
--- up. The two inner LATERALs (product pick, quantity) re-run once per
--- generated line rather than once per statement, so each line gets its own
--- independent random product and quantity, not the same one copied 500k
--- times.
+-- up.
+--
+-- The `WHERE ... IS NOT NULL` in each LATERAL below is load-bearing, not
+-- dead code: a LATERAL subquery that never actually references a column
+-- from the preceding FROM item can still be planned as a one-time subplan,
+-- evaluated ONCE for the whole query and reused for every outer row —
+-- volatile functions like random() don't prevent this, because the
+-- decision is about correlation, not volatility. Without these dummy
+-- references, every order ended up with exactly 1 item, always the same
+-- product, always the same quantity (verified against a live run — this
+-- was a real bug here, not a hypothetical one). Referencing the preceding
+-- row forces genuine per-row re-evaluation.
 INSERT INTO order_items (key, currency, price_cents, quantity, product_id, order_id)
 SELECT p.key, p.currency, p.price_cents, q.quantity, p.id, o.id
 FROM orders o
 CROSS JOIN LATERAL (
   SELECT (1 + floor(random() * random() * 4))::int AS item_count
+  WHERE o.id IS NOT NULL
 ) ic
 CROSS JOIN LATERAL generate_series(1, ic.item_count) AS line(n)
 CROSS JOIN LATERAL (
   SELECT id, key, currency, price_cents
   FROM products
+  WHERE line.n IS NOT NULL
   ORDER BY random()
   LIMIT 1
 ) p
 CROSS JOIN LATERAL (
   SELECT (1 + floor(random() * random() * 4))::int AS quantity
+  WHERE line.n IS NOT NULL
 ) q;
 
 -- VACUUM (ANALYZE), not bare ANALYZE: ANALYZE alone gives the planner fresh

@@ -5,7 +5,13 @@ services:
       context: .
       target: runner
     env_file:
-      - .env
+      # required: false — a fresh clone has no .env yet (gitignored by
+      # design). Without this, *any* `docker compose` command fails outright
+      # ("env file .env not found"), even one scoped only to `postgres` —
+      # Compose validates every service's config up front, not just the one
+      # you're targeting.
+      - path: .env
+        required: false
     secrets:
       - db_password
     init: true
