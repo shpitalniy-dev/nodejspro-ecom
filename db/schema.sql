@@ -10,15 +10,13 @@ CREATE TABLE IF NOT EXISTS products (
     deleted_at TIMESTAMPTZ DEFAULT NULL
 );
 
-CREATE TABLE IF NOT EXISTS leads (
+CREATE TABLE IF NOT EXISTS users (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
     name TEXT,
-    email TEXT,
-    phone TEXT,
+    email TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMPTZ DEFAULT NULL,
-    CONSTRAINT check_contact_method CHECK (email IS NOT NULL OR phone IS NOT NULL)
+    updated_at TIMESTAMPTZ DEFAULT NULL
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -28,7 +26,7 @@ CREATE TABLE IF NOT EXISTS orders (
     amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
     discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
     status TEXT NOT NULL CHECK (status IN ('unpaid', 'pending', 'paid', 'canceled', 'refunded')) DEFAULT 'unpaid',
-    lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE RESTRICT,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL,
     CONSTRAINT discount_not_exceeding_amount CHECK (discount_cents <= amount_cents)
@@ -43,5 +41,5 @@ CREATE TABLE IF NOT EXISTS order_items (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL,
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
-    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE CASCADE
+    order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT
 );
