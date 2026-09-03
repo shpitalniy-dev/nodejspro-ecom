@@ -125,17 +125,17 @@ read goes through the typed `ConfigService<Env, true>`.
 
 ### Environment variables
 
-| Variable           | Default                 | Required | Description                                                        |
-| ------------------ | ----------------------- | :------: | ------------------------------------------------------------------ |
-| `PORT`             | —                       |    ✅    | HTTP port the server listens on.                                   |
-| `LOG_LEVEL`        | `info`                  |          | One of `debug`, `info`, `warn`, `error`.                           |
-| `TIMEOUT_MS`       | `5000`                  |          | Timeout budget for outbound calls, in ms.                          |
-| `DB_HOST`          | `postgres`              |          | Postgres host — the compose service name, resolved via Docker DNS. |
-| `DB_PORT`          | `5432`                  |          | Postgres port.                                                     |
-| `DB_NAME`          | `ecom`                  |          | Database name.                                                     |
-| `DB_USER`          | `app_user`              |          | Postgres role the app connects as (created by `db/init.sql`).      |
-| `DB_PASSWORD_FILE` | `./secrets/db_password` |          | Path to the file holding the _current_ DB password.                |
-| `DB_URL`           | —                       |    ✅    | Full connection string. Not read by the app itself — see below.    |
+| Variable           | Default                    | Required | Description                                                                                         |
+| ------------------ | -------------------------- | :------: | --------------------------------------------------------------------------------------------------- |
+| `PORT`             | —                          |    ✅    | HTTP port the server listens on.                                                                    |
+| `LOG_LEVEL`        | `info`                     |          | One of `debug`, `info`, `warn`, `error`.                                                            |
+| `TIMEOUT_MS`       | `5000`                     |          | Timeout budget for outbound calls, in ms.                                                           |
+| `DB_HOST`          | `postgres`                 |          | Postgres host — the compose service name, resolved via Docker DNS.                                  |
+| `DB_PORT`          | `5432`                     |          | Postgres port.                                                                                      |
+| `DB_NAME`          | `ecom`                     |          | Database name.                                                                                      |
+| `DB_USER`          | `app_user`                 |          | Postgres role the app connects as (created by `db/init.sql`).                                       |
+| `DB_PASSWORD_FILE` | `/run/secrets/db_password` |          | Path to the file holding the _current_ DB password (where Compose mounts the `db_password` secret). |
+| `DB_URL`           | —                          |    ✅    | Full connection string. Not read by the app itself — see below.                                     |
 
 The DB password itself is **never** an env var for the app's own
 connection — see [Rotate the DB
@@ -165,9 +165,18 @@ npm run check:env
 
 ```bash
 cp .env.example .env
+mkdir -p secrets && printf '%s' 'postgres_app_password' > secrets/db_password
 npm install
 make dev-up   # docker compose up --build -V — starts api + postgres
 ```
+
+`secrets/db_password` is git-ignored and doesn't exist on a fresh clone —
+Compose's `db_password` secret reads it from that path on the host and
+mounts it into the container at `/run/secrets/db_password`, so without it
+the first request touching the database fails outright. The value above
+(`postgres_app_password`) has to match `database/init.sql`'s bootstrap
+password, since that's what Postgres actually creates `app_user` with on a
+fresh volume.
 
 On the very first boot, Postgres has an empty data volume, so
 `db/init.sql` runs once and creates the `app_user` role. On every
@@ -189,8 +198,10 @@ mv /tmp/env.bak .env
 
 ### Rotate the DB password without restarting
 
-The password lives in `secrets/db_password` (git-ignored, mounted into the
-`api` container as a Compose secret), and `pg.Pool`'s `password` option is a
+The password lives in `secrets/db_password` on the host (git-ignored),
+which Compose mounts into the `api` container at `/run/secrets/db_password`
+— the actual path `DB_PASSWORD_FILE` points at. `pg.Pool`'s `password`
+option is a
 **function** that re-reads that file on every new connection — not a string
 frozen at startup. Rotating it doesn't touch the running process at all.
 

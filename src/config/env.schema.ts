@@ -8,7 +8,11 @@ export const envSchema = z.object({
   DB_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
   DB_NAME: z.string().min(1).default('ecom'),
   DB_USER: z.string().min(1).default('app_user'),
-  DB_PASSWORD_FILE: z.string().min(1).default('./secrets/db_password'),
+  // Compose mounts the `db_password` secret at /run/secrets/db_password in
+  // both dev and prod — a relative path here only "worked" in dev by
+  // accident, because dev also bind-mounts the whole repo. Prod has no such
+  // bind mount, so a relative path is unreachable there.
+  DB_PASSWORD_FILE: z.string().min(1).default('/run/secrets/db_password'),
   // Full connection string — not read anywhere in the app itself
   // (DatabaseService still uses the discrete vars above + the rotating
   // password file, since a static string can't survive rotate.sh changing
