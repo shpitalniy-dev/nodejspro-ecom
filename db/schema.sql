@@ -15,6 +15,18 @@ CREATE TABLE IF NOT EXISTS users (
     uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
     name TEXT,
     email TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NULL
+);
+
+-- One row per product. Separate from products on purpose — every order
+-- updates this table, not products, so the catalog itself stays purely
+-- read-heavy (see README's Architecture Note).
+CREATE TABLE IF NOT EXISTS inventory (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    product_id INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE RESTRICT,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL
 );
@@ -25,7 +37,7 @@ CREATE TABLE IF NOT EXISTS orders (
     currency currency_code NOT NULL,
     amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
     discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
-    status TEXT NOT NULL CHECK (status IN ('unpaid', 'pending', 'paid', 'canceled', 'refunded')) DEFAULT 'unpaid',
+    status TEXT NOT NULL CHECK (status IN ('unpaid', 'pending', 'paid', 'refunded')) DEFAULT 'unpaid',
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL,
@@ -42,4 +54,16 @@ CREATE TABLE IF NOT EXISTS order_items (
     updated_at TIMESTAMPTZ DEFAULT NULL,
     product_id INTEGER NOT NULL REFERENCES products(id) ON DELETE RESTRICT,
     order_id INTEGER NOT NULL REFERENCES orders(id) ON DELETE RESTRICT
+);
+
+-- One row per order, created the moment that order's payment status
+-- becomes 'paid' — not created at all for unpaid/refunded orders. Separate
+-- from orders.status on purpose: payment and fulfillment are different
+-- events with different owners (see README's Architecture Note).
+CREATE TABLE IF NOT EXISTS fulfillments (
+    id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    order_id INTEGER NOT NULL UNIQUE REFERENCES orders(id) ON DELETE RESTRICT,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'processing', 'shipped', 'delivered')) DEFAULT 'pending',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NULL
 );

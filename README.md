@@ -33,6 +33,119 @@ make status      # docker compose ps
 make test        # docker compose run --rm api npm test
 ```
 
+## Architecture Note | Course Project
+
+The first chapter of the course project, not a separate assignment. This
+describes the domain and architecture for the full 17-HW arc — a plan for
+what gets built. Decisions here don't get rewritten as the build progresses;
+new ones get appended to the log at the bottom instead.
+
+### 1. What this service is
+
+**Ecommerce API** — an online store: customers browse and buy from the
+catalog, admins manage the catalog and fulfil orders.
+
+**Customer**
+
+- Browse available products.
+- Place an order for one or more products.
+- View order history, including each order's payment and fulfillment
+  status.
+
+**Admin**
+
+- Manage the product catalog, including stock levels.
+- Process an order's fulfillment once it's paid.
+
+### 2. Domain
+
+Six entities:
+
+- **`users`** — customers and admins, distinguished by `role`.
+- **`products`** — the catalog.
+- **`inventory`** — one row per product, tracking `quantity` on hand.
+  Kept separate from `products` rather than a `stock` column there, so
+  every order updates `inventory` and the catalog itself stays purely
+  read-heavy — protecting HW#23's caching story instead of undermining it
+  the moment real order traffic exists.
+- **`orders`** — one per customer purchase, carrying a payment status:
+  `unpaid → paid → refunded`. `amount_cents`/`discount_cents` are computed
+  and stored at creation time based on whatever discount conditions
+  applied then (coupon, bulk quantity, etc.) — not derived by summing
+  `order_items`, so a later change to a discount rule or a product's price
+  can't rewrite what a past order actually charged.
+- **`order_items`** — line items within an order, snapshotting the
+  product's price/currency at purchase time so a later price change can't
+  rewrite history.
+- **`fulfillments`** — one per order, created the moment that order's
+  payment status becomes `paid`, carrying its own status:
+  `pending → processing → shipped → delivered`.
+
+Relationships: `users` 1—N `orders`; `orders` 1—N `order_items`;
+`orders` 1—1 `fulfillments`; `products` 1—N `order_items`;
+`products` 1—1 `inventory`.
+
+#### Domain check
+
+| ✔  | Requirement                      | How it's met                                                                                                    | Delivered by                             |
+| --- | -------------------------------- | --------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| ✅  | ≥ 2 user roles, different rights | `users.role` (`user`/`admin`)                                                                                   | HW#24                                    |
+| ✅  | Contested resource               | `inventory.quantity`, decremented on order creation                                                             | HW#14                                    |
+| ✅  | Irreversible-effect operation    | Payment capture — an order's status moves to `paid`, creating a `fulfillments` row                              | HW#12 ✓ schema · HW#22 outbox            |
+| ✅  | Event needing notification       | Fulfillment status change (`shipped`, `delivered`) notifies the customer                                        | HW#18 realtime · HW#19 queue             |
+| ✅  | Entity with files                | Product images                                                                                                  | HW#26                                    |
+| ✅  | Read-heavy, rarely-changed data  | The product catalog                                                                                             | HW#12 ✓ schema · HW#23 cache             |
+| ✅  | 4-6 entities + a heavy query     | `users`, `products`, `orders`, `order_items` (EXPLAIN-proven at 200k rows), plus `fulfillments` and `inventory` | HW#12 ✓ · fulfillments/inventory planned |
+
+7/7. Three rows carry a `✓` because their schema and proof already shipped
+in HW#12; the rest land with the HW that actually needs them.
+
+### 3. Architectural decisions
+
+- **Compute model** — a single stateless Node.js/NestJS container (`api`
+  service). No serverless split; nothing about expected traffic justifies
+  one.
+- **Database** — a single Postgres instance (`postgres` service), no read
+  replicas. Proven at real volume in HW#12: a 200,000-row `orders` table,
+  indexed and EXPLAIN-verified, not just tested against an empty dev DB.
+- **Asynchrony** — synchronous request/response for now; a queue/event bus
+  arrives with HW#18 (realtime), #19 (queue), and #22 (outbox) — exactly
+  where fulfillment-status notifications and payment idempotency live.
+- **Auth** — arrives with HW#24, once `users.role` exists to authorize
+  against.
+- **Deploy** — Docker Compose, single host (`docker-compose.yml` for prod,
+  `docker-compose.override.yml` for dev). No orchestrator planned.
+
+### 4. Trade-offs
+
+- **Auth lands at HW#24, not sooner** — building it before the contract,
+  config, and data-layer work (HW#9-#12) was solid would mean redoing
+  auth-gated tests every time those changed underneath it.
+- **No queue/event bus before HW#18/#19** — a `fulfillments` table with
+  nothing creating or consuming its rows yet is just dead state; the table
+  and the mechanism that populates/reacts to it arrive together.
+- **`inventory` arrives at HW#14, not earlier** — that HW is explicitly
+  about transactions under concurrent load. A decrement built before
+  covering isolation levels and locking would be a naive version HW#14
+  would just replace.
+- **Connection pooling and backups aren't tuned yet** — HW#15 covers this
+  specifically; tuning ahead of the lecture that's supposed to inform it
+  would be guessing.
+- **`openapi/openapi.yaml` only describes what's implemented** —
+  `express-openapi-validator` enforces that spec against every real
+  request and response at runtime. Adding `role`, `inventory`, or
+  `fulfillments` to it before the feature exists would make the contract
+  aspirational instead of enforced, which is exactly what HW#9's design
+  was built to avoid.
+
+### Logs
+
+- **2026-09-06** — Settled the domain shape before touching the schema:
+  `users.role` (`user`/`admin`) for RBAC; an order payment lifecycle of
+  `unpaid → paid → refunded`; a separate `fulfillments` table, one row per
+  order, created when it's paid; a separate `inventory` table, one row per
+  product, keeping `products` itself purely read-heavy.
+
 ## OpenAPI Contract | HW #9
 
 The API contract lives in [`openapi/openapi.yaml`](openapi/openapi.yaml).
