@@ -4,11 +4,14 @@
 -- comment on each table) instead of uniform, so EXPLAIN has something real
 -- to say later.
 
--- ~5,000 users. Not the head table, so no special skew needed here.
-INSERT INTO users (name, email, created_at)
+-- ~5,000 users. Not the head table, so no special skew needed beyond role:
+-- ~2% admin, the rest plain customers — matches the domain check's "≥2
+-- roles, different rights" without pretending staff outnumber customers.
+INSERT INTO users (name, email, role, created_at)
 SELECT
   'User ' || i,
   'user' || i || '@example.com',
+  CASE WHEN random() < 0.02 THEN 'admin' ELSE 'user' END,
   now() - (random() * interval '730 days')
 FROM generate_series(1, 5000) AS i;
 
@@ -21,10 +24,19 @@ SELECT
   now() - (random() * interval '730 days')
 FROM generate_series(1, 1000) AS i;
 
+-- inventory: exactly one row per product, seeded once products exist.
+-- Quantities span 0-499 so some products land genuinely out of stock
+-- without forcing it — realistic, and gives HW#14 real contested rows to
+-- work with later.
+INSERT INTO inventory (product_id, quantity)
+SELECT id, (floor(random() * 500))::int
+FROM products;
+
 -- 200,000 orders — the head table (well past the 100k floor). Three
 -- deliberate skews, none of them 33/33/33:
---   * status: mostly 'paid', a real tail of 'pending'/'unpaid'/'canceled'/
---     'refunded'.
+--   * status: mostly 'paid', a real tail of 'pending'/'unpaid'/'refunded'.
+--     No 'canceled' — matches the domain note's payment lifecycle
+--     (unpaid → paid → refunded, plus 'pending' as the in-flight state).
 --   * user_id: power-law-ish — most orders belong to a minority of users.
 --     user_id = 1 is a reserved "hero" account: guaranteed 500 rows from the
 --     i % 400 = 0 forcing below, plus whatever the power(random(), 2) skew
@@ -53,7 +65,6 @@ SELECT
     WHEN status_roll < 0.70 THEN 'paid'
     WHEN status_roll < 0.80 THEN 'pending'
     WHEN status_roll < 0.90 THEN 'unpaid'
-    WHEN status_roll < 0.96 THEN 'canceled'
     ELSE 'refunded'
   END,
   now() - time_offset
@@ -104,6 +115,25 @@ CROSS JOIN LATERAL (
   SELECT (1 + floor(random() * random() * 4))::int AS quantity
   WHERE line.n IS NOT NULL
 ) q;
+
+-- fulfillments: one row per PAID order only — unpaid/pending/refunded
+-- orders never get one, matching "created the moment payment succeeds"
+-- from the schema comment. Status skewed toward further-along states
+-- (delivered most common, pending least) since a paid order has usually
+-- had time to move forward, not because of any real recency correlation.
+INSERT INTO fulfillments (order_id, status)
+SELECT id,
+  CASE
+    WHEN status_roll < 0.10 THEN 'pending'
+    WHEN status_roll < 0.30 THEN 'processing'
+    WHEN status_roll < 0.60 THEN 'shipped'
+    ELSE 'delivered'
+  END
+FROM (
+  SELECT id, random() AS status_roll
+  FROM orders
+  WHERE status = 'paid'
+) paid_orders;
 
 -- VACUUM (ANALYZE), not bare ANALYZE: ANALYZE alone gives the planner fresh
 -- statistics, but only VACUUM updates the visibility map. Without it, an
