@@ -10,10 +10,13 @@ CREATE INDEX idx_orders_user_id_created_at ON orders (user_id, created_at);
 -- Query 2 — status + recent window. Partial: 'pending' is a real minority
 -- of orders, so this indexes that slice only, not all 200k rows. Only
 -- covers status = 'pending' — a query for any other status won't use it,
--- by design.
+-- by design. INCLUDE carries the columns q2 actually selects, so the whole
+-- query is answerable from the index alone — no heap fetch per row.
 CREATE INDEX idx_orders_pending_created_at ON orders (created_at)
+INCLUDE (uuid, user_id, amount_cents, discount_cents)
 WHERE status = 'pending';
 
--- Query 3 — case-insensitive email lookup. Expression index: a plain index
--- on email wouldn't be reachable through lower(email) at all.
-CREATE INDEX idx_users_email_lower ON users (lower(email));
+-- Query 3 — case-insensitive email lookup. Handled by the UNIQUE index on
+-- lower(email) in db/schema.sql (users_email_lower_key) — that index
+-- enforces uniqueness and serves this lookup, so nothing extra is needed
+-- here.

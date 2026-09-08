@@ -10,9 +10,11 @@
 --
 -- Expected before: Seq Scan on users.
 --
--- Fix: an expression index — CREATE INDEX ... ON users (lower(email)) —
--- see db/indexes.sql. Re-run with EXPLAIN (ANALYZE, BUFFERS) after adding
--- it and re-running ANALYZE — expect an Index Scan with Index Cond on the
+-- Fix: a UNIQUE expression index — users_email_lower_key in db/schema.sql
+-- (it enforces case-insensitive email uniqueness, and doubles as this
+-- query's lookup index — see db/schema.sql for why it lives there and not
+-- in db/indexes.sql). Re-run with EXPLAIN (ANALYZE, BUFFERS) after
+-- re-running ANALYZE — expect an Index Scan with Index Cond on the
 -- lower(email) expression itself (not a Filter). This will always be a
 -- plain Index Scan, not an Index Only Scan — SELECT * needs every column
 -- of users, and the expression index only stores lower(email) + a row

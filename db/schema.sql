@@ -3,7 +3,7 @@ CREATE DOMAIN currency_code AS TEXT CHECK (VALUE IN ('USD'));
 CREATE TABLE IF NOT EXISTS products (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     key TEXT NOT NULL UNIQUE,
-    price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+    price_cents BIGINT NOT NULL CHECK (price_cents >= 0),
     currency currency_code NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL,
@@ -20,6 +20,12 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at TIMESTAMPTZ DEFAULT NULL
 );
 
+-- Case-insensitive uniqueness: 'Bob@x.com' and 'bob@x.com' can't both
+-- register — a plain UNIQUE on email wouldn't catch that. Also replaces
+-- idx_users_email_lower from db/indexes.sql: one index now does both jobs
+-- (uniqueness + the case-insensitive lookup q3 needs), instead of two.
+CREATE UNIQUE INDEX users_email_lower_key ON users (lower(email));
+
 -- One row per product. Separate from products on purpose — every order
 -- updates this table, not products, so the catalog itself stays purely
 -- read-heavy (see README's Architecture Note).
@@ -35,8 +41,8 @@ CREATE TABLE IF NOT EXISTS orders (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     uuid UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
     currency currency_code NOT NULL,
-    amount_cents INTEGER NOT NULL CHECK (amount_cents >= 0),
-    discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
+    amount_cents BIGINT NOT NULL CHECK (amount_cents >= 0),
+    discount_cents BIGINT NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
     status TEXT NOT NULL CHECK (status IN ('unpaid', 'pending', 'paid', 'refunded')) DEFAULT 'unpaid',
     user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -48,7 +54,7 @@ CREATE TABLE IF NOT EXISTS order_items (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     key TEXT NOT NULL, -- snapshot of the product key
     currency currency_code NOT NULL, -- snapshot of the product currency
-    price_cents INTEGER NOT NULL, -- snapshot of the product price
+    price_cents BIGINT NOT NULL, -- snapshot of the product price
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL,
