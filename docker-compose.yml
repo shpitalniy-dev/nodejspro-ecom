@@ -17,8 +17,12 @@ services:
       # you're targeting.
       - path: .env
         required: false
-    volumes:
-      - infisical_secrets:/shared-secrets:ro
+    # Deliberately disconnected from Infisical for now, to meet HW #13's
+    # acceptance criteria — `docker compose up -d --wait`, then
+    # migrate/seed/demo/report run straight against Postgres as admin with
+    # /scripts/with-secrets.sh.
+    # volumes:
+    #   - infisical_secrets:/shared-secrets:ro
     init: true
     restart: unless-stopped
     ports:
@@ -29,8 +33,9 @@ services:
         max-size: 10m
         max-file: '5'
     depends_on:
-      infisical-agent:
-        condition: service_healthy
+      # Same reason as the volumes note above.
+      # infisical-agent:
+      #   condition: service_healthy
       postgres:
         condition: service_healthy
     deploy:
@@ -68,7 +73,15 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Opt-in only: `docker compose --profile rotation up -d`. Reactively (and,
+  # via reconcile.sh, unconditionally on its own startup) keeps app_user's
+  # Postgres password in sync with whatever's current in Infisical. Not part
+  # of the default `docker compose up` — api no longer depends on it or
+  # reads its output (api gets its own DB credentials at boot via
+  # scripts/with-secrets.sh instead), so this container is purely the
+  # rotation path and never blocks bringing the rest of the stack up.
   infisical-agent:
+    profiles: ['rotation']
     build:
       context: ./infisical
     restart: unless-stopped
