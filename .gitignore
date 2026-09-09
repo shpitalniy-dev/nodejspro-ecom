@@ -15,6 +15,7 @@ node_modules
 
 # Secrets
 secrets
+infisical/secrets
 
 # Turbo (leftover from monorepo tooling, harmless if unused)
 .turbo
