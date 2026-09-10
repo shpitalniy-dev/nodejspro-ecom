@@ -169,5 +169,15 @@ export default [
       'no-unused-vars': OFF,
     },
   },
+  {
+    // TypeORM entities reference each other on both sides of every relation
+    // (Order.items <-> OrderItem.order, etc.). The import cycles are real but
+    // safe — the relation targets are lazy `() => Entity` thunks, resolved
+    // long after module load. tsc is clean; only this rule objects.
+    files: ['src/entities/**/*.ts'],
+    rules: {
+      'import/no-cycle': OFF,
+    },
+  },
   eslintConfigPrettier, // always last
 ];
