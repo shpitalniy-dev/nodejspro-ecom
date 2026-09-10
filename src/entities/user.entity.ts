@@ -6,6 +6,7 @@ import {
   Index,
   OneToMany,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Order } from './order.entity.ts';
@@ -45,5 +46,5 @@ export class User {
   updatedAt!: Date | null;
 
   @OneToMany(() => Order, order => order.user)
-  orders?: Order[];
+  orders?: Relation<Order[]>;
 }

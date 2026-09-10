@@ -9,6 +9,7 @@ import {
   OneToMany,
   OneToOne,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Fulfillment } from './fulfillment.entity.ts';
@@ -56,7 +57,7 @@ export class Order {
     nullable: false,
   })
   @JoinColumn({ name: 'user_id' })
-  user!: User;
+  user!: Relation<User>;
 
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
@@ -65,8 +66,8 @@ export class Order {
   updatedAt!: Date | null;
 
   @OneToMany(() => OrderItem, item => item.order)
-  items?: OrderItem[];
+  items?: Relation<OrderItem[]>;
 
   @OneToOne(() => Fulfillment, fulfillment => fulfillment.order)
-  fulfillment?: Fulfillment;
+  fulfillment?: Relation<Fulfillment>;
 }

@@ -6,6 +6,7 @@ import {
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Order } from './order.entity.ts';
@@ -50,12 +51,12 @@ export class OrderItem {
     nullable: false,
   })
   @JoinColumn({ name: 'product_id' })
-  product!: Product;
+  product!: Relation<Product>;
 
   @ManyToOne(() => Order, order => order.items, {
     onDelete: 'RESTRICT',
     nullable: false,
   })
   @JoinColumn({ name: 'order_id' })
-  order!: Order;
+  order!: Relation<Order>;
 }

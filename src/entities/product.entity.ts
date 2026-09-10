@@ -7,6 +7,7 @@ import {
   OneToMany,
   OneToOne,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Inventory } from './inventory.entity.ts';
@@ -53,8 +54,8 @@ export class Product {
   deletedAt!: Date | null;
 
   @OneToOne(() => Inventory, inventory => inventory.product)
-  inventory?: Inventory;
+  inventory?: Relation<Inventory>;
 
   @OneToMany(() => OrderItem, item => item.product)
-  orderItems?: OrderItem[];
+  orderItems?: Relation<OrderItem[]>;
 }

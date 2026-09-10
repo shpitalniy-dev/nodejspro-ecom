@@ -6,6 +6,7 @@ import {
   JoinColumn,
   OneToOne,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Order } from './order.entity.ts';
@@ -46,5 +47,5 @@ export class Fulfillment {
     nullable: false,
   })
   @JoinColumn({ name: 'order_id' })
-  order!: Order;
+  order!: Relation<Order>;
 }

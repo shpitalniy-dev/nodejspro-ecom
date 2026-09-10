@@ -6,6 +6,7 @@ import {
   JoinColumn,
   OneToOne,
   PrimaryGeneratedColumn,
+  type Relation,
 } from 'typeorm';
 
 import { Product } from './product.entity.ts';
@@ -38,5 +39,5 @@ export class Inventory {
     nullable: false,
   })
   @JoinColumn({ name: 'product_id' })
-  product!: Product;
+  product!: Relation<Product>;
 }
