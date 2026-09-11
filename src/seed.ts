@@ -30,59 +30,86 @@ const MAIN_TABLES = [
 
 type TableName = (typeof MAIN_TABLES)[number];
 
+// balanceCents: admins don't buy anything in any fixture, so they stay at 0;
+// buyers get a flat, generous balance ($5,000) — comfortably more than any
+// single PRODUCTS price below, so nothing in the narrative fixtures below
+// is ever balance-constrained. checkout()'s own concurrency demos use their
+// own dedicated buyer(s), not these.
 const USERS: Array<{
   uuid: string;
   name: string | null;
   email: string;
   role: UserRole;
+  balanceCents: string;
 }> = [
   {
     uuid: '10000000-0000-4000-8000-000000000001',
     name: 'Alice Admin',
     email: 'alice@seed.example',
     role: 'admin',
+    balanceCents: '0',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000002',
     name: 'Bob Admin',
     email: 'bob@seed.example',
     role: 'admin',
+    balanceCents: '0',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000003',
     name: 'Carol Buyer',
     email: 'carol@seed.example',
     role: 'user',
+    balanceCents: '500000',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000004',
     name: 'Dave Buyer',
     email: 'dave@seed.example',
     role: 'user',
+    balanceCents: '500000',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000005',
     name: 'Erin Buyer',
     email: 'erin@seed.example',
     role: 'user',
+    balanceCents: '500000',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000006',
     name: 'Frank Buyer',
     email: 'frank@seed.example',
     role: 'user',
+    balanceCents: '500000',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000007',
     name: null,
     email: 'grace@seed.example',
     role: 'user',
+    balanceCents: '500000',
   },
   {
     uuid: '10000000-0000-4000-8000-000000000008',
     name: 'Heidi Buyer',
     email: 'heidi@seed.example',
     role: 'user',
+    balanceCents: '500000',
+  },
+  // Dedicated to the concurrency demos (demo:checkout, demo:race,
+  // demo:retry) — kept separate from the narrative buyers above so those
+  // demos' own resets (balance/stock back to a known baseline on every run)
+  // never touch a row report.ts/demo-nplus1.ts's already-documented numbers
+  // depend on. Baseline balance here doesn't matter much beyond "non-zero"
+  // — each demo resets it to whatever value its own walkthrough needs.
+  {
+    uuid: '10000000-0000-4000-8000-000000000009',
+    name: 'Demo Buyer',
+    email: 'demo-buyer@seed.example',
+    role: 'user',
+    balanceCents: '100000',
   },
 ];
 
@@ -97,6 +124,11 @@ const PRODUCTS: Array<{ key: string; priceCents: string; quantity: number }> = [
   { key: 'sku-implement', priceCents: '640', quantity: 250 },
   { key: 'sku-sprocket', priceCents: '1500', quantity: 60 },
   { key: 'sku-flange', priceCents: '2750', quantity: 33 },
+  // Dedicated to the concurrency demos (demo:race today; demo:retry later)
+  // — kept out of ORDERS below so it never appears in report.ts's numbers
+  // except as its own new row. Baseline quantity here doesn't matter much;
+  // demo:race resets it to a known value on every run.
+  { key: 'sku-concurrency-demo', priceCents: '1000', quantity: 10 },
 ];
 
 const CURRENCY = 'USD';
