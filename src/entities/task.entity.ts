@@ -17,8 +17,15 @@ import {
 // (see README's Concurrency section). A failed attempt uses a SAVEPOINT to
 // keep the attempts/last_error bump without keeping whatever partial work
 // the task attempted.
+//
+// availableAt defaults to "now" (immediately claimable) — most tasks should
+// run ASAP; a delay is the exception, set explicitly by whoever creates
+// that kind of task. checkout() sets it a couple hours out for its
+// post-processing task, to leave a window for refunds/upsells to merge
+// fulfillment across orders before it's actually claimed.
 export type TaskStatus = 'pending' | 'done' | 'failed';
 
+@Index('tasks_status_available_at_idx', ['status', 'availableAt'])
 @Entity('tasks')
 export class Task {
   @PrimaryGeneratedColumn('identity', {
@@ -34,10 +41,14 @@ export class Task {
   @Column({ name: 'payload', type: 'jsonb', default: () => "'{}'" })
   payload!: Record<string, unknown>;
 
-  @Index('tasks_status_idx', ['status'])
   @Check('tasks_status_check', "status IN ('pending', 'done', 'failed')")
   @Column({ name: 'status', type: 'text', default: 'pending' })
   status!: TaskStatus;
+
+  // A worker's claim query filters `available_at <= now()` alongside
+  // `status = 'pending'` — see the composite index above.
+  @Column({ name: 'available_at', type: 'timestamptz', default: () => 'now()' })
+  availableAt!: Date;
 
   // Identifies which worker last claimed the task — purely observational
   // (the FOR UPDATE lock, not this column, is what prevents double claims).
