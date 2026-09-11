@@ -17,6 +17,7 @@
     "migrate:show": "bash scripts/with-secrets.sh dev npx typeorm migration:show -d build/data-source.js",
     "precommit": "lint-staged && npm run ts-lint",
     "prepare": "husky install",
+    "report": "bash scripts/with-secrets.sh dev node build/report.js",
     "seed": "bash scripts/with-secrets.sh dev node build/seed.js",
     "start": "npm run build && node ./build/index.js",
     "test": "tsc -p tsconfig.test.json && node --test ./.test-build/test/*.test.js",
