@@ -39,6 +39,12 @@ export class User {
   @Column({ name: 'role', type: 'text', default: 'user' })
   role!: UserRole;
 
+  // bigint -> string, same reasoning as Product.priceCents: pg returns
+  // bigint as a string, and this is money in minor units, never a float.
+  @Check('users_balance_cents_check', 'balance_cents >= 0')
+  @Column({ name: 'balance_cents', type: 'bigint', default: 0 })
+  balanceCents!: string;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 
