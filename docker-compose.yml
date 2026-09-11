@@ -17,6 +17,18 @@ services:
       # you're targeting.
       - path: .env
         required: false
+    # PORT/DB_URL have no default in src/config/env.schema.ts (by design —
+    # they're meant to be required), so on a fresh clone with no .env the
+    # app fails config validation and never becomes healthy, which fails
+    # `docker compose up -d --wait` outright (HW #13's grading needs the
+    # whole default profile up, not just postgres). ${VAR:-default} still
+    # picks up a real .env's values for interpolation — this only supplies
+    # the fallback a fresh clone is missing. DB_URL itself is never read by
+    # the running app (see Configuration | HW #11) — any syntactically
+    # valid value satisfies the schema.
+    environment:
+      PORT: ${PORT:-3000}
+      DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@postgres:5432/ecom}
     # Deliberately disconnected from Infisical for now, to meet HW #13's
     # acceptance criteria — `docker compose up -d --wait`, then
     # migrate/seed/demo/report run straight against Postgres as admin with
