@@ -7,6 +7,7 @@
     "build": "tsc -p tsconfig.build.json",
     "check:env": "node scripts/check-env-example.js",
     "contract": "node contract/check.js",
+    "demo:nplus1": "bash scripts/with-secrets.sh dev node build/demo-nplus1.js",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",
     "lint": "eslint ./ --max-warnings 0",

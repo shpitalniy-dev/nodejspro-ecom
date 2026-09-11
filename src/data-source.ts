@@ -1,5 +1,6 @@
 import 'reflect-metadata';
 
+import type { DataSourceOptions } from 'typeorm';
 import { DataSource } from 'typeorm';
 
 import { entities } from './entities/index.ts';
@@ -16,9 +17,10 @@ if (!process.env.DB_URL) {
   );
 }
 
-// Single export of the DataSource instance — the TypeORM CLI (`-d`) rejects
-// a file that exports more than one.
-export const AppDataSource = new DataSource({
+// Exported separately so other scripts (demo-nplus1.ts) can build their own
+// DataSource on top of the same connection config with a different logger,
+// without touching this shared instance.
+export const dataSourceOptions: DataSourceOptions = {
   type: 'postgres',
   url: process.env.DB_URL,
   entities,
@@ -26,4 +28,8 @@ export const AppDataSource = new DataSource({
   synchronize: false,
   migrationsRun: false,
   logging: ['error', 'warn'],
-});
+};
+
+// Single export of a DataSource *instance* — the TypeORM CLI (`-d`) rejects
+// a file that exports more than one.
+export const AppDataSource = new DataSource(dataSourceOptions);
