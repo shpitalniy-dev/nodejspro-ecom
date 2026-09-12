@@ -33,7 +33,15 @@ async function revenueByProduct(): Promise<RevenueRow[]> {
 }
 
 function formatCents(cents: string): string {
-  return `$${(Number(cents) / 100).toFixed(2)}`;
+  // BigInt end to end — cents is a SUM(...) aggregate, which pg returns as
+  // a numeric string precisely so callers don't have to round-trip through
+  // a float. Converting via Number() before dividing throws that guarantee
+  // away right before display: past Number.MAX_SAFE_INTEGER the result
+  // silently loses precision, the exact thing every money column in this
+  // project is typed bigint/string to avoid.
+  const value = BigInt(cents);
+
+  return `$${value / 100n}.${(value % 100n).toString().padStart(2, '0')}`;
 }
 
 async function main(): Promise<void> {
