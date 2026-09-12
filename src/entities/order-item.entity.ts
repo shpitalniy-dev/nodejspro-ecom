@@ -3,6 +3,7 @@ import {
   Column,
   CreateDateColumn,
   Entity,
+  Index,
   JoinColumn,
   ManyToOne,
   PrimaryGeneratedColumn,
@@ -15,6 +16,13 @@ import { Product } from './product.entity.ts';
 // The explicit join-entity for orders <-> products: it carries data on the
 // relationship (quantity, price snapshot), so it's a real entity with two
 // @ManyToOne sides, never @ManyToMany.
+//
+// Postgres never indexes a foreign-key column automatically (unlike some
+// other databases) — without these, every join through order_id/product_id
+// (the N+1 fix's `relations`/`relationLoadStrategy` paths, report.ts's own
+// joins) falls back to a seq scan the moment the table isn't tiny.
+@Index('order_items_order_id_idx', ['order'])
+@Index('order_items_product_id_idx', ['product'])
 @Entity('order_items')
 export class OrderItem {
   @PrimaryGeneratedColumn('identity', {

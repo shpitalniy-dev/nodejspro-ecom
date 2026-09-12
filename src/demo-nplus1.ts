@@ -11,6 +11,26 @@ import { dataSourceOptions } from './data-source.ts';
 // N+1, demonstrated on the real graph: orders -> order_items -> products.
 // Same DB, three strategies, measured at two collection sizes (N = 3 and 8,
 // the full seed) to prove the fixed strategies are flat, not just smaller.
+// A third (or different) measurement point doesn't need a code change —
+// pass sizes on the command line: npm run demo:nplus1 -- 3 8 20
+
+const DEFAULT_SIZES = [3, 8];
+
+function parseSizes(args: string[]): number[] {
+  if (args.length === 0) {
+    return DEFAULT_SIZES;
+  }
+
+  return args.map(arg => {
+    const n = Number(arg);
+
+    if (!Number.isInteger(n) || n <= 0) {
+      throw new Error(`invalid size: "${arg}" (expected a positive integer)`);
+    }
+
+    return n;
+  });
+}
 
 class QueryCountLogger implements Logger {
   count = 0;
@@ -102,7 +122,7 @@ async function main(): Promise<void> {
   await ds.initialize();
 
   try {
-    const sizes = [3, 8];
+    const sizes = parseSizes(process.argv.slice(2));
     const strategies: Array<{
       name: string;
       run: (take: number) => Promise<void>;
