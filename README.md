@@ -649,6 +649,174 @@ node -e "const s=require('./package.json').scripts;const bad=['migrate','seed']
   process.exit(bad.length===0?0:1)"
 ```
 
+## Конкурентність | HW #14
+
+The main test of the HW#13 data layer: what happens when the checkout
+endpoint gets hit 50 times at once. `checkout()` decrements balance and
+stock, records the order, and queues its post-processing task — all in one
+transaction, or none of it — and survives real concurrent load without
+oversell or lost updates. One new migration (`users.balance_cents`, plus a
+generic `tasks` queue table — no FK to `orders` on purpose, see
+`task.entity.ts`); everything else below is new application code, not
+schema.
+
+| File                                      | Purpose                                               |
+| ----------------------------------------- | ----------------------------------------------------- |
+| `src/transactions/checkout.ts`            | The transactional operation itself                    |
+| `src/transactions/with-retry.ts`          | Generic retry wrapper — catches only `40001`/`40P01`  |
+| `src/transactions/demo-race.ts`           | 50 concurrent checkouts, one product, no oversell     |
+| `src/transactions/demo-workers.ts`        | Worker pool draining the task queue via `SKIP LOCKED` |
+| `src/transactions/demo-retry.ts`          | Two provoked serialization failures, both recovered   |
+| `src/migrations/...AddBalanceAndTasks.ts` | `users.balance_cents` + the `tasks` table             |
+
+### Checkout — atomic UPDATE vs. pessimistic lock
+
+Both the balance and the stock decrement are a single
+`UPDATE ... SET x = x - $n WHERE ... AND x >= $n RETURNING x`, not a
+`SELECT` followed by a `FOR UPDATE`-protected write. The reasoning: there's
+no separate read step for a concurrent checkout to race into in the first
+place — the check and the mutation are the same statement — so plain
+`READ COMMITTED` (the default) is already correct, with no retry loop
+needed. `FOR UPDATE` earns its cost when the decision logic is too complex
+to express in one `WHERE`/`SET`; a flat "enough left, and take it" isn't.
+
+Two things worth documenting because they weren't obvious until verified
+against real behavior:
+
+- **`manager.query()` on an `UPDATE`/`DELETE` always returns
+  `[rows, rowCount]`, never a plain array — even with `RETURNING`.**
+  Confirmed directly in TypeORM's `PostgresQueryRunner.query()`, which
+  special-cases `UPDATE`/`DELETE` to `raw = [raw.rows, raw.rowCount]`; a
+  bare array only happens for a `SELECT`-shaped command. The first version
+  of `checkout()` checked `.length` on the un-destructured result — which
+  checks the _tuple's_ length (always `2`) — so the out-of-stock and
+  insufficient-funds guards never fired at all, and every checkout silently
+  "succeeded" regardless of real stock/balance. Fixed by destructuring
+  `const [rows] = await manager.query(...)` before checking `rows.length`.
+- **The post-processing task's `available_at` is computed by Postgres
+  (`now() + interval '2 hours'`), not `new Date(Date.now() + ms)` in the
+  app.** The whole operation already runs inside one DB transaction, so
+  there's no reason this scheduling decision should depend on the app
+  server's clock agreeing with the database's — the worker that later
+  checks `available_at <= now()` is asking the same clock that set it.
+
+### `demo:race`
+
+```bash
+npm run demo:race
+```
+
+```
+attempts:            50
+succeeded:           10
+out of stock:        40
+unexpected errors:   0
+final stock:         0
+negative-stock rows: 0
+```
+
+50 concurrent `checkout()` calls (`Promise.allSettled`, not the
+assignment's literal `Promise.all` — `Promise.all` aborts the whole batch
+on the first rejection, and ~40 of these 50 calls are _expected_ to reject
+once stock hits zero; `Promise.allSettled` keeps the "fire all 50 at once,
+no app-level queue" property while still collecting every outcome).
+Reproducible every run: exactly 10 successes (the seeded stock), the rest
+correctly rejected with `OutOfStockError`, zero unexpected errors.
+
+The negative-stock check turned out to be backed by more than application
+logic: `inventory.quantity` has a real `CHECK (quantity >= 0)` constraint.
+Tried to violate it directly with `psql` to test the check itself, and
+Postgres refused the `UPDATE` outright — oversell is structurally
+impossible here independent of whether `checkout()`'s own logic is right.
+
+### `demo:workers`
+
+```bash
+npm run demo:workers
+```
+
+```
+distribution (claimed / recorded in DB):
+  worker-1   5 / 5
+  worker-2   5 / 5
+  worker-3   5 / 5
+  worker-4   5 / 5
+
+processed twice:   0
+done:              20 / 20
+delayed task:      status=pending processed=0 (expected pending/0)
+elapsed:           936ms (sequential estimate: 3000ms)
+```
+
+4 workers, `FOR UPDATE SKIP LOCKED` via TypeORM's own QueryBuilder API
+(`setLock('pessimistic_write')` + `setOnLocked('skip_locked')`) — a
+deliberate mirror of `checkout.ts`'s raw SQL, so the submission shows both
+primitives rather than one style everywhere. One task in the batch is
+scheduled two hours out; it correctly stays `pending` the whole run,
+proving `available_at` is actually enforced by the worker's query, not
+just set by `checkout()`.
+
+**A real, subtle bug worth documenting in full, the same way HW#13's N+1
+findings are:** the very first version claimed with
+`.setLock('pessimistic_write').setOnLocked('skip_locked').where(...).orderBy(...).getOne()`
+and measured wildly uneven results — one worker claiming 12–17 of 20 tasks,
+another getting 0, total time barely beating the sequential estimate
+despite 4-way concurrency. Printing the actual generated SQL
+(`qb.getSql()`) showed why: **`.getOne()` does not add a SQL `LIMIT`** — it
+only takes the first row of the entire matching result set in JS. Combined
+with row locking, that's a correctness bug, not just waste: the lock
+applies to _every_ row the query matches. Whichever transaction's query ran
+first locked all 20 pending rows in one shot, leaving the other three
+workers nothing to claim until it committed. Adding `.limit(1)` before
+`.getOne()` fixed it completely — a minimal isolation test (four bare
+transactions, no claim logic) confirmed genuine 4-way parallelism was never
+the problem; the missing `LIMIT` was.
+
+### `demo:retry`
+
+```bash
+npm run demo:retry
+```
+
+```
+scenario A — REPEATABLE READ: concurrent balance read-modify-write
+  op +$50: retries=0   op -$30: retries=1
+  final balance_cents: 102000 (expected 102000)
+
+scenario B — SERIALIZABLE: concurrent admin self-demotion (write skew)
+  alice demoted=true retries=0   bob demoted=false retries=1
+  final admin count: 1 (expected 1)
+```
+
+Two scenarios, both through the same `withRetry`, proving it's
+isolation-level-agnostic rather than tuned to one failure mode:
+
+- **Scenario A (`REPEATABLE READ`)** — two concurrent read-modify-writes on
+  the same `users.balance_cents` row. The loser's own `UPDATE` fails with
+  `40001` (its snapshot is stale against the winner's commit); retried, the
+  final balance lands exactly on `baseline + 5000 - 3000` every run.
+- **Scenario B (`SERIALIZABLE`)** — write skew, the case only
+  `SERIALIZABLE` catches: two admins each check "are there ≥2 admins?" and,
+  if so, demote _themselves_. Neither transaction's write touches the row
+  the other read, so under `REPEATABLE READ` both would silently succeed,
+  leaving zero admins — a real invariant violation with no error at all.
+  Confirmed the failure actually happens at `COMMIT`, not the `UPDATE` —
+  Postgres's real error text is "could not serialize access due to
+  read/write dependencies among transactions" — the exact RR-vs-SSI
+  distinction from the lecture, verified against real Postgres output
+  rather than taken on faith. The retry matters differently here than in
+  Scenario A: on retry,
+  the loser re-reads the admin count fresh (now `1`) and correctly
+  _refuses_ to demote — retrying the whole transaction, not just the write,
+  is what makes that refusal possible.
+
+**Why the retry wrapper catches only `40001`/`40P01`:** those two codes are
+Postgres's own instruction to retry the _entire_ transaction — a stale
+snapshot or a broken deadlock cycle, nothing about the data itself being
+wrong. Any other error (a `CHECK` violation, a foreign-key violation, a
+plain bug) is a real problem that retrying would either fail identically
+forever or, worse, silently paper over.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -670,4 +838,7 @@ npm run migrate
 npm run seed && npm run seed
 npm run demo:nplus1
 npm run report
+npm run demo:race
+npm run demo:workers
+npm run demo:retry
 ```
