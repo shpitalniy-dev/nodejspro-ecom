@@ -817,6 +817,62 @@ wrong. Any other error (a `CHECK` violation, a foreign-key violation, a
 plain bug) is a real problem that retrying would either fail identically
 forever or, worse, silently paper over.
 
+## Data layer ops | HW #15
+
+Two production attributes added to the HW#12–14 data layer: a connection
+pooler in front of Postgres, and a backup you can actually prove restores,
+because you've restored it yourself.
+
+| File                      | Purpose                                              |
+| ------------------------- | ---------------------------------------------------- |
+| `pgbouncer/pgbouncer.ini` | Pool config — `pool_mode = transaction`, in the repo |
+| `pgbouncer/userlist.txt`  | Client auth for PgBouncer (plain password, SCRAM)    |
+
+### PgBouncer
+
+Every DB-touching thing — the app, `migrate`/`seed`, every `demo:*` script —
+connects to `127.0.0.1:6432` (PgBouncer) now, never to Postgres's own `5432`
+directly (still published, but no longer anyone's front door). `docker
+compose up -d --wait` brings up `postgres` → `pgbouncer` → `api` in that
+dependency order.
+
+```bash
+psql -h 127.0.0.1 -p 6432 -U admin -d ecom -c "SELECT 1"
+psql -h 127.0.0.1 -p 6432 -U admin -d pgbouncer -c "SHOW POOLS"
+```
+
+**Why `pool_mode = transaction`, and what it costs.** Session pooling (one
+client, one server connection, for the client's whole lifetime) doesn't
+actually solve the problem PgBouncer exists for — a pool that hands out one
+dedicated server connection per client and never takes it back scales the
+same way no pooling does. Transaction mode hands a server connection to a
+client only for the duration of one transaction, then reclaims it the
+instant that transaction ends — which is what actually lets many client
+connections (up to `max_client_conn = 100`) share a small, stable number of
+real Postgres backends (`default_pool_size = 10`). The cost is real,
+specific breakage, not a vague "some things don't work":
+
+- **Named prepared statements** can't be reused — the physical connection a
+  statement was prepared on may belong to a completely different client by
+  the time the next query comes in. (Verified this doesn't bite this
+  project: `pg`'s default query path uses unnamed statements per call, and
+  every real DB operation here already runs inside one
+  `dataSource.transaction(...)` — re-ran the full `migrate` → `seed` →
+  `demo:race` → `demo:workers` → `demo:retry` → `report` sequence against
+  the pooled connection and got byte-identical output to running directly
+  against Postgres.)
+- **Session-level `SET`, `LISTEN`/`NOTIFY`, and session-scoped advisory
+  locks** stop working across statements — anything meant to persist state
+  on "the connection" between round trips can silently land on a different
+  backend than the one that set it up.
+- **Temporary tables** are tied to whichever physical backend happened to
+  serve that one transaction — a later query in what the app thinks is the
+  same session can be handed a different backend that never saw it.
+
+None of this touches this codebase specifically because every operation
+here is already scoped to a single transaction or a single one-shot query —
+exactly the shape transaction pooling is designed for.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
