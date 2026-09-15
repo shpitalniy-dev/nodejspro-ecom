@@ -7,11 +7,14 @@ import { Task } from '../entities/task.entity.ts';
 
 // The core "buy now" operation: decrement balance, decrement stock, record
 // the order, queue its post-processing task — all in one transaction, or
-// none of it. Deliberately plain READ COMMITTED (the default): both
-// decrements are single atomic `UPDATE ... WHERE ... >= $n RETURNING`
-// statements, so there's no separate read step for a concurrent checkout to
-// race against and no need for FOR UPDATE or a higher isolation level. See
-// README's Concurrency section for the fuller justification.
+// none of it. Deliberately plain READ COMMITTED (the default): every check
+// that has to be race-safe is a single atomic `UPDATE ... WHERE ... >= $n
+// RETURNING` statement (or, for the price, a value looked up fresh inside
+// that same statement — see the balance decrement below), so there's no
+// separate read step for a concurrent checkout — or a concurrent price
+// change — to race against, and no need for FOR UPDATE or a higher
+// isolation level. See README's Concurrency section for the fuller
+// justification.
 
 export class InsufficientFundsError extends Error {
   constructor(userId: number) {
@@ -61,6 +64,12 @@ export async function checkout(
   { userId, productKey, quantity }: CheckoutParams,
 ): Promise<CheckoutResult> {
   return dataSource.transaction(async manager => {
+    // Plain, unlocked lookup — only for id/currency/key, none of which this
+    // system ever changes concurrently the way price can. The price itself
+    // is deliberately NOT read here: using it for amountCents would be the
+    // exact stale-price race this function has to avoid (a concurrent
+    // price change landing between this read and the balance decrement
+    // below). See that decrement for where the real price comes from.
     const product = await manager
       .getRepository(Product)
       .findOneBy({ key: productKey });
@@ -69,13 +78,15 @@ export async function checkout(
       throw new UnknownProductError(productKey);
     }
 
-    const amountCents = (
-      BigInt(product.priceCents) * BigInt(quantity)
-    ).toString();
-
-    // Atomic balance decrement: the WHERE clause is both the check and the
-    // lock, with no window between them for a concurrent checkout to race
-    // into — see README's Concurrency section for the full walkthrough.
+    // Atomic balance decrement — and the price itself is looked up fresh
+    // *inside this same statement* (a MATERIALIZED CTE, evaluated once),
+    // not from the plain lookup above. Statement atomicity is what
+    // protects it: nothing can change price_cents mid-statement, so this
+    // needs no lock at all, and only for the duration of this one
+    // statement rather than pessimistically locking `products` (shared,
+    // frequently-read catalog data) for the rest of the transaction — the
+    // same reasoning that already kept FOR UPDATE off the stock/balance
+    // checks below, just extended to cover the price too.
     //
     // manager.query() on an UPDATE/DELETE always returns [rows, rowCount],
     // never a plain rows array — even with RETURNING (verified against
@@ -85,16 +96,38 @@ export async function checkout(
     // checking .length on the un-destructured result checks the *tuple's*
     // length (always 2), so it never sees a real zero-rows case.
     const [balanceRows] = (await manager.query(
-      `UPDATE users
-       SET balance_cents = balance_cents - $1
-       WHERE id = $2 AND balance_cents >= $1
-       RETURNING balance_cents`,
-      [amountCents, userId],
-    )) as [Array<{ balance_cents: string }>, number];
+      `WITH current_price AS MATERIALIZED (
+         SELECT price_cents FROM products WHERE id = $1
+       )
+       UPDATE users
+       SET balance_cents = balance_cents
+         - (SELECT price_cents FROM current_price) * $2
+       WHERE id = $3
+         AND balance_cents >= (SELECT price_cents FROM current_price) * $2
+       RETURNING balance_cents, (SELECT price_cents FROM current_price) AS price_cents`,
+      [product.id, quantity, userId],
+    )) as [
+      Array<{ balance_cents: string; price_cents: string | null }>,
+      number,
+    ];
 
     if (balanceRows.length === 0) {
       throw new InsufficientFundsError(userId);
     }
+
+    const { price_cents: priceCents } = balanceRows[0];
+
+    if (priceCents === null) {
+      // The product row vanished between the lookup above and this
+      // statement — every FK to products is RESTRICT, so this needs a
+      // never-before-ordered product deleted in the exact window between
+      // two statements of this same transaction. Vanishingly unlikely, but
+      // a distinct error beats silently mis-reporting it as insufficient
+      // funds.
+      throw new UnknownProductError(productKey);
+    }
+
+    const amountCents = (BigInt(priceCents) * BigInt(quantity)).toString();
 
     // Same atomic pattern for stock — the one demo:race actually exercises
     // under real concurrency.
@@ -121,7 +154,10 @@ export async function checkout(
     await manager.getRepository(OrderItem).save({
       key: product.key,
       currency: product.currency,
-      priceCents: product.priceCents,
+      // The price actually charged (from the atomic decrement above), not
+      // product.priceCents — that field on the plain lookup can be stale
+      // the moment a concurrent price change lands.
+      priceCents,
       quantity,
       product: { id: product.id },
       order: { id: order.id },
