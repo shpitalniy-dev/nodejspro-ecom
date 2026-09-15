@@ -25,10 +25,12 @@ services:
     # picks up a real .env's values for interpolation — this only supplies
     # the fallback a fresh clone is missing. DB_URL itself is never read by
     # the running app (see Configuration | HW #11) — any syntactically
-    # valid value satisfies the schema.
+    # valid value satisfies the schema. Points at pgbouncer, not postgres
+    # directly, as of HW #15 — the app (like every DB-touching script) goes
+    # through the pooler now.
     environment:
       PORT: ${PORT:-3000}
-      DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@postgres:5432/ecom}
+      DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@pgbouncer:6432/ecom}
     # Deliberately disconnected from Infisical for now, to meet HW #13's
     # acceptance criteria — `docker compose up -d --wait`, then
     # migrate/seed/demo/report run straight against Postgres as admin with
@@ -48,7 +50,9 @@ services:
       # Same reason as the volumes note above.
       # infisical-agent:
       #   condition: service_healthy
-      postgres:
+      # Transitively waits on postgres too — pgbouncer's own depends_on
+      # already requires it healthy first.
+      pgbouncer:
         condition: service_healthy
     deploy:
       resources:
@@ -86,6 +90,33 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+  # Everything else (the app, migrate/seed/demo scripts, backup/restore-drill)
+  # connects here, not to postgres directly — see README's "Data layer ops"
+  # section for what pool_mode = transaction buys and what it breaks.
+  pgbouncer:
+    image: edoburu/pgbouncer:latest
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6432:6432'
+    volumes:
+      - ./pgbouncer/pgbouncer.ini:/etc/pgbouncer/pgbouncer.ini:ro
+      - ./pgbouncer/userlist.txt:/etc/pgbouncer/userlist.txt:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h 127.0.0.1 -p 6432 -U admin -d ecom']
+      interval: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 
   # Opt-in only: `docker compose --profile rotation up -d`. Reactively (and,
   # via reconcile.sh, unconditionally on its own startup) keeps app_user's
