@@ -932,6 +932,29 @@ bash scripts/restore-drill.sh
 One real executed run, with measured RTO and stated RPO, is documented in
 [`RESTORE-DRILL.md`](./RESTORE-DRILL.md).
 
+### WAL archiving & PITR (bonus)
+
+Beyond what HW#15 requires: `postgres` runs with `archive_mode=on` and an
+`archive_command` that copies every completed WAL segment into a
+`wal_archive` volume, continuously. Combined with a `pg_basebackup`
+(base backup) taken at some point T0, this makes **point-in-time recovery**
+possible — restoring to any moment between T0 and now, not just to whenever
+the last dump happened to run.
+
+```bash
+bash scripts/pitr-drill.sh
+```
+
+⚠️ **Destructive by design** — the drill truncates real `orders` rows on the
+dev `postgres` service on purpose, to have an incident to recover from
+(`npm run seed` restores demo data after). Not part of `## Grading` for that
+reason — `scripts/restore-drill.sh` already satisfies the graded
+requirement on its own.
+
+One real executed run — base backup, a "good" transaction, a simulated
+`TRUNCATE`, recovery to the instant before it, checksum MATCH, measured RTO,
+RPO = 0 — is documented in [`PITR-DRILL.md`](./PITR-DRILL.md).
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:

@@ -63,6 +63,20 @@ services:
           cpus: '0.25'
           memory: 300M
 
+  # One-shot: fresh named volumes are root-owned, but archive_mode's
+  # archive_command below runs as the `postgres` user — without this,
+  # archiving fails outright with "Permission denied" on the very first WAL
+  # segment. Uses the `postgres` username rather than a hardcoded uid, so it
+  # isn't tied to one image's numeric ID. Runs to completion and exits;
+  # `postgres` waits on that, not on it staying up.
+  postgres-volumes-init:
+    image: postgres:17-alpine
+    entrypoint:
+      ['sh', '-c', 'chown -R postgres:postgres /wal_archive /basebackup']
+    volumes:
+      - wal_archive:/wal_archive
+      - basebackup:/basebackup
+
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
@@ -75,9 +89,24 @@ services:
         max-file: '3'
     environment:
       <<: *postgres-admin-creds
+    # wal_level=replica is already PG17's default — set explicitly so PITR's
+    # requirement is documented, not implicit. archive_mode/archive_command
+    # are what make scripts/pitr-drill.sh possible: without continuous WAL
+    # archiving, a base backup alone only gives a single point in time, not
+    # a range you can recover to (see PITR-DRILL.md).
+    command: >
+      postgres
+      -c wal_level=replica
+      -c archive_mode=on
+      -c archive_command='test ! -f /wal_archive/%f && cp %p /wal_archive/%f'
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - wal_archive:/wal_archive
+      - basebackup:/basebackup
+    depends_on:
+      postgres-volumes-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U admin -d ecom']
       interval: 3s
@@ -90,6 +119,20 @@ services:
         reservations:
           cpus: '0.25'
           memory: 256M
+
+  # Opt-in only: `docker compose --profile pitr up -d --wait pitr`. The PITR
+  # restore target — scripts/pitr-drill.sh seeds its volume from a base
+  # backup before starting this, so Postgres's entrypoint finds an
+  # already-initialized PGDATA and goes straight into WAL recovery instead
+  # of running initdb. See PITR-DRILL.md.
+  pitr:
+    image: postgres:17-alpine
+    profiles: ['pitr']
+    ports:
+      - '127.0.0.1:5433:5432'
+    volumes:
+      - pgdata_pitr:/var/lib/postgresql/data
+      - wal_archive:/wal_archive:ro
 
   # Opt-in only: `docker compose --profile drill up -d --wait restore`. The
   # restore-drill's target — a genuinely empty Postgres (no db/init.sql, no
@@ -220,6 +263,9 @@ volumes:
   postgres_data:
   infisical_secrets:
   pgdata_restore:
+  wal_archive:
+  basebackup:
+  pgdata_pitr:
 
 secrets:
   infisical_client_secret:
