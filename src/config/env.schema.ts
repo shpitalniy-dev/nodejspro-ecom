@@ -4,8 +4,9 @@ export const envSchema = z.object({
   PORT: z.coerce.number().int().min(1).max(65535),
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
   TIMEOUT_MS: z.coerce.number().int().positive().default(5000),
-  DB_HOST: z.string().min(1).default('postgres'),
-  DB_PORT: z.coerce.number().int().min(1).max(65535).default(5432),
+  // PgBouncer (HW #15), not Postgres directly.
+  DB_HOST: z.string().min(1).default('pgbouncer'),
+  DB_PORT: z.coerce.number().int().min(1).max(65535).default(6432),
   DB_NAME: z.string().min(1).default('ecom'),
   DB_USER: z.string().min(1).default('app_user'),
   // Compose mounts the `db_password` secret at /run/secrets/db_password in
