@@ -917,6 +917,21 @@ immediately rather than waiting for the first scheduled run. Dumps land in
 `./pgbackups/` (gitignored, separate from `backups/` — different dump format,
 own retention: 14 daily / 4 weekly / 6 monthly).
 
+### Restore drill
+
+`scripts/restore-drill.sh` proves a backup actually restores, because it's
+been restored — not just that a `.dump` file exists. Takes a fresh dump,
+`pg_restore`s it into a throwaway, genuinely empty Postgres (own volume, own
+port `5434`, no shared state with the real database), checksums `orders`
+before and after, and times the restore.
+
+```bash
+bash scripts/restore-drill.sh
+```
+
+One real executed run, with measured RTO and stated RPO, is documented in
+[`RESTORE-DRILL.md`](./RESTORE-DRILL.md).
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -942,4 +957,5 @@ npm run demo:race
 npm run demo:workers
 npm run demo:retry
 bash scripts/backup.sh
+bash scripts/restore-drill.sh
 ```

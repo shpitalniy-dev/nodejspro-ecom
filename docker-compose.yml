@@ -91,6 +91,26 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Opt-in only: `docker compose --profile drill up -d --wait restore`. The
+  # restore-drill's target — a genuinely empty Postgres (no db/init.sql, no
+  # shared volume with the real `postgres`), so scripts/restore-drill.sh's
+  # pg_restore into it proves the dump alone can recreate the schema, not
+  # that some leftover state was already there. Own port (5434) so it can
+  # run alongside the real `postgres` on 5432. See RESTORE-DRILL.md.
+  restore:
+    image: postgres:17-alpine
+    profiles: ['drill']
+    ports:
+      - '127.0.0.1:5434:5432'
+    environment:
+      <<: *postgres-admin-creds
+    volumes:
+      - pgdata_restore:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U admin -d ecom']
+      interval: 2s
+      retries: 20
+
   # Opt-in only: `docker compose --profile pgbackups up -d`. A second,
   # container-native backup mechanism alongside scripts/backup.sh's host cron
   # — same idea (pg_dump, direct to postgres, never through PgBouncer — a
@@ -199,6 +219,7 @@ services:
 volumes:
   postgres_data:
   infisical_secrets:
+  pgdata_restore:
 
 secrets:
   infisical_client_secret:
