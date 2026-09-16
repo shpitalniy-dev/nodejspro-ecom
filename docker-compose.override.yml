@@ -11,7 +11,7 @@ services:
     environment:
       - NODE_ENV=development
       - PORT=${PORT:-3000}
-      - DB_URL=${DB_URL:-postgresql://admin:admin-bootstrap-password@postgres:5432/ecom}
+      - DB_URL=${DB_URL:-postgresql://admin:admin-bootstrap-password@pgbouncer:6432/ecom}
     command: npm run dev
     deploy:
       resources:

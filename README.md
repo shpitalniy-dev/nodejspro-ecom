@@ -817,13 +817,151 @@ wrong. Any other error (a `CHECK` violation, a foreign-key violation, a
 plain bug) is a real problem that retrying would either fail identically
 forever or, worse, silently paper over.
 
+## Data layer ops | HW #15
+
+Two production attributes added to the HW#12–14 data layer: a connection
+pooler in front of Postgres, and a backup you can actually prove restores,
+because you've restored it yourself.
+
+| File                      | Purpose                                              |
+| ------------------------- | ---------------------------------------------------- |
+| `pgbouncer/pgbouncer.ini` | Pool config — `pool_mode = transaction`, in the repo |
+| `pgbouncer/userlist.txt`  | Client auth for PgBouncer (plain password, SCRAM)    |
+
+### PgBouncer
+
+Every DB-touching thing — the app, `migrate`/`seed`, every `demo:*` script —
+connects to `127.0.0.1:6432` (PgBouncer) now, never to Postgres's own `5432`
+directly (still published, but no longer anyone's front door). `docker
+compose up -d --wait` brings up `postgres` → `pgbouncer` → `api` in that
+dependency order.
+
+```bash
+psql -h 127.0.0.1 -p 6432 -U admin -d ecom -c "SELECT 1"
+psql -h 127.0.0.1 -p 6432 -U admin -d pgbouncer -c "SHOW POOLS"
+```
+
+**Why `pool_mode = transaction`, and what it costs.** Session pooling (one
+client, one server connection, for the client's whole lifetime) doesn't
+actually solve the problem PgBouncer exists for — a pool that hands out one
+dedicated server connection per client and never takes it back scales the
+same way no pooling does. Transaction mode hands a server connection to a
+client only for the duration of one transaction, then reclaims it the
+instant that transaction ends — which is what actually lets many client
+connections (up to `max_client_conn = 100`) share a small, stable number of
+real Postgres backends (`default_pool_size = 10`). The cost is real,
+specific breakage, not a vague "some things don't work":
+
+- **Named prepared statements** can't be reused — the physical connection a
+  statement was prepared on may belong to a completely different client by
+  the time the next query comes in. (Verified this doesn't bite this
+  project: `pg`'s default query path uses unnamed statements per call, and
+  every real DB operation here already runs inside one
+  `dataSource.transaction(...)` — re-ran the full `migrate` → `seed` →
+  `demo:race` → `demo:workers` → `demo:retry` → `report` sequence against
+  the pooled connection and got byte-identical output to running directly
+  against Postgres.)
+- **Session-level `SET`, `LISTEN`/`NOTIFY`, and session-scoped advisory
+  locks** stop working across statements — anything meant to persist state
+  on "the connection" between round trips can silently land on a different
+  backend than the one that set it up.
+- **Temporary tables** are tied to whichever physical backend happened to
+  serve that one transaction — a later query in what the app thinks is the
+  same session can be handed a different backend that never saw it.
+
+None of this touches this codebase specifically because every operation
+here is already scoped to a single transaction or a single one-shot query —
+exactly the shape transaction pooling is designed for.
+
+### Backups
+
+`scripts/backup.sh` — `pg_dump -Fc` straight from the `postgres` container
+(never through PgBouncer: a dump is one long-lived operation with nothing to
+pool, and it would just tie up one of PgBouncer's 10 backend slots for no
+benefit). Runs `pg_dump` via `docker compose exec` rather than a
+host-installed one, so the dump format always matches the server's own
+version instead of whatever happens to be on the machine running cron.
+
+```bash
+bash scripts/backup.sh
+```
+
+Dumps land in `backups/` (gitignored — real row data, not repo content) as
+`ecom_<UTC timestamp>.dump`, custom format, restorable with `pg_restore`.
+Each run prunes down to the last 14 dumps.
+
+To schedule it nightly, install `backup.cron` (a fragment, not a full
+crontab — see the file for the exact one-liner; it needs the repo's absolute
+path filled in):
+
+```bash
+crontab -l 2>/dev/null | { cat; sed "s#<repo-path>#$(pwd)#" backup.cron; } | crontab -
+```
+
+Requires the `postgres` container to already be up at run time — cron itself
+doesn't start the stack.
+
+**Alternative: `pgbackups` sidecar.** A second, opt-in backup mechanism —
+same idea (`pg_dump`, direct to `postgres`) but with the schedule living
+inside a container instead of the host's crontab, sidestepping host cron's
+`PATH`/environment issues with `docker`. Not part of default `docker compose
+up`:
+
+```bash
+docker compose --profile pgbackups up -d
+```
+
+Uses [`prodrigestivill/postgres-backup-local`](https://github.com/prodrigestivill/docker-postgres-backup-local),
+same nightly 03:00 schedule, `BACKUP_ON_START=TRUE` so a dump exists
+immediately rather than waiting for the first scheduled run. Dumps land in
+`./pgbackups/` (gitignored, separate from `backups/` — different dump format,
+own retention: 14 daily / 4 weekly / 6 monthly).
+
+### Restore drill
+
+`scripts/restore-drill.sh` proves a backup actually restores, because it's
+been restored — not just that a `.dump` file exists. Takes a fresh dump,
+`pg_restore`s it into a throwaway, genuinely empty Postgres (own volume, own
+port `5434`, no shared state with the real database), checksums `orders`
+before and after, and times the restore.
+
+```bash
+bash scripts/restore-drill.sh
+```
+
+One real executed run, with measured RTO and stated RPO, is documented in
+[`RESTORE-DRILL.md`](./RESTORE-DRILL.md).
+
+### WAL archiving & PITR (bonus)
+
+Beyond what HW#15 requires: `postgres` runs with `archive_mode=on` and an
+`archive_command` that copies every completed WAL segment into a
+`wal_archive` volume, continuously. Combined with a `pg_basebackup`
+(base backup) taken at some point T0, this makes **point-in-time recovery**
+possible — restoring to any moment between T0 and now, not just to whenever
+the last dump happened to run.
+
+```bash
+bash scripts/pitr-drill.sh
+```
+
+⚠️ **Destructive by design** — the drill truncates real `orders` rows on the
+dev `postgres` service on purpose, to have an incident to recover from
+(`npm run seed` restores demo data after). Not part of `## Grading` for that
+reason — `scripts/restore-drill.sh` already satisfies the graded
+requirement on its own.
+
+One real executed run — base backup, a "good" transaction, a simulated
+`TRUNCATE`, recovery to the instant before it, checksum MATCH, measured RTO,
+RPO = 0 — is documented in [`PITR-DRILL.md`](./PITR-DRILL.md).
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
 
 ```bash
 docker compose up -d --wait
-export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:5432/ecom
+export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export SKIP_VAULT=1
 ```
 
@@ -841,4 +979,6 @@ npm run report
 npm run demo:race
 npm run demo:workers
 npm run demo:retry
+bash scripts/backup.sh
+bash scripts/restore-drill.sh
 ```
