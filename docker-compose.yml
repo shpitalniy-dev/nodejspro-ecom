@@ -91,6 +91,43 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Opt-in only: `docker compose --profile pgbackups up -d`. A second,
+  # container-native backup mechanism alongside scripts/backup.sh's host cron
+  # — same idea (pg_dump, direct to postgres, never through PgBouncer — a
+  # dump is one long operation with nothing to pool), but the schedule lives
+  # inside the container instead of the host's crontab, sidestepping the
+  # PATH/environment issues host cron has with `docker`. Own dump format and
+  # own directory (./pgbackups/, not backups/) — the two mechanisms don't
+  # share retention or output.
+  pgbackups:
+    image: prodrigestivill/postgres-backup-local:17
+    profiles: ['pgbackups']
+    restart: unless-stopped
+    user: postgres:postgres
+    environment:
+      <<: *postgres-admin-creds
+      POSTGRES_HOST: postgres
+      SCHEDULE: '0 3 * * *'
+      BACKUP_ON_START: 'TRUE'
+      BACKUP_KEEP_DAYS: 14
+      BACKUP_KEEP_WEEKS: 4
+      BACKUP_KEEP_MONTHS: 6
+      HEALTHCHECK_PORT: 8080
+    volumes:
+      - ./pgbackups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+    # The image's own baked-in HEALTHCHECK polls every 300s — fine for a
+    # backup job, but it'd make `--wait` sit idle for up to 5 minutes on
+    # first start, unlike every other service here. Same check, shorter
+    # interval.
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:8080/']
+      interval: 5s
+      retries: 5
+      start_period: 10s
+
   # Everything else (the app, migrate/seed/demo scripts, backup/restore-drill)
   # connects here, not to postgres directly — see README's "Data layer ops"
   # section for what pool_mode = transaction buys and what it breaks.

@@ -1,0 +1,12 @@
+# ecom nightly backup — 03:00 UTC.
+#
+# This is a fragment, not a full crontab: the repo path below is
+# machine-specific, so fill it in before installing. To install (append to
+# your existing crontab, keeping whatever's already there):
+#
+#   crontab -l 2>/dev/null | { cat; sed "s#<repo-path>#$(pwd)#" backup.cron; } | crontab -
+#
+# Requires the `postgres` container to be up (docker compose up -d) at
+# 03:00 — cron itself doesn't start the stack.
+
+0 3 * * * cd <repo-path> && bash scripts/backup.sh >> backups/backup.log 2>&1

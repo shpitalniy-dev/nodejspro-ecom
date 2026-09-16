@@ -873,6 +873,50 @@ None of this touches this codebase specifically because every operation
 here is already scoped to a single transaction or a single one-shot query —
 exactly the shape transaction pooling is designed for.
 
+### Backups
+
+`scripts/backup.sh` — `pg_dump -Fc` straight from the `postgres` container
+(never through PgBouncer: a dump is one long-lived operation with nothing to
+pool, and it would just tie up one of PgBouncer's 10 backend slots for no
+benefit). Runs `pg_dump` via `docker compose exec` rather than a
+host-installed one, so the dump format always matches the server's own
+version instead of whatever happens to be on the machine running cron.
+
+```bash
+bash scripts/backup.sh
+```
+
+Dumps land in `backups/` (gitignored — real row data, not repo content) as
+`ecom_<UTC timestamp>.dump`, custom format, restorable with `pg_restore`.
+Each run prunes down to the last 14 dumps.
+
+To schedule it nightly, install `backup.cron` (a fragment, not a full
+crontab — see the file for the exact one-liner; it needs the repo's absolute
+path filled in):
+
+```bash
+crontab -l 2>/dev/null | { cat; sed "s#<repo-path>#$(pwd)#" backup.cron; } | crontab -
+```
+
+Requires the `postgres` container to already be up at run time — cron itself
+doesn't start the stack.
+
+**Alternative: `pgbackups` sidecar.** A second, opt-in backup mechanism —
+same idea (`pg_dump`, direct to `postgres`) but with the schedule living
+inside a container instead of the host's crontab, sidestepping host cron's
+`PATH`/environment issues with `docker`. Not part of default `docker compose
+up`:
+
+```bash
+docker compose --profile pgbackups up -d
+```
+
+Uses [`prodrigestivill/postgres-backup-local`](https://github.com/prodrigestivill/docker-postgres-backup-local),
+same nightly 03:00 schedule, `BACKUP_ON_START=TRUE` so a dump exists
+immediately rather than waiting for the first scheduled run. Dumps land in
+`./pgbackups/` (gitignored, separate from `backups/` — different dump format,
+own retention: 14 daily / 4 weekly / 6 monthly).
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -897,4 +941,5 @@ npm run report
 npm run demo:race
 npm run demo:workers
 npm run demo:retry
+bash scripts/backup.sh
 ```
