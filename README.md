@@ -961,7 +961,7 @@ Fresh clone, clean DB, no vault access:
 
 ```bash
 docker compose up -d --wait
-export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:5432/ecom
+export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export SKIP_VAULT=1
 ```
 
