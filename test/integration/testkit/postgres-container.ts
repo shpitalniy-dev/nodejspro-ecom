@@ -3,7 +3,8 @@ import { PostgreSqlContainer } from '@testcontainers/postgresql';
 import { DataSource } from 'typeorm';
 
 import { entities } from '../../../src/entities/index.ts';
-import { migrations } from '../../../src/migrations/index.ts';
+
+import { migrations } from './migrations.ts';
 
 export interface TestPg {
   dataSource: DataSource;

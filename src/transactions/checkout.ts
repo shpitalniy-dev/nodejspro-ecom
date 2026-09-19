@@ -1,4 +1,5 @@
 import type { DataSource } from 'typeorm';
+import { In } from 'typeorm';
 
 import { Order } from '../entities/order.entity.ts';
 import { OrderItem } from '../entities/order-item.entity.ts';
@@ -7,15 +8,15 @@ import { Task } from '../entities/task.entity.ts';
 import { createInventoryRepository } from '../repositories/inventory.repository.ts';
 
 // The core "buy now" operation: decrement balance, decrement stock, record
-// the order, queue its post-processing task — all in one transaction, or
-// none of it. Deliberately plain READ COMMITTED (the default): every check
-// that has to be race-safe is a single atomic `UPDATE ... WHERE ... >= $n
-// RETURNING` statement (or, for the price, a value looked up fresh inside
-// that same statement — see the balance decrement below), so there's no
-// separate read step for a concurrent checkout — or a concurrent price
-// change — to race against, and no need for FOR UPDATE or a higher
-// isolation level. See README's Concurrency section for the fuller
-// justification.
+// the order (one or more line items), queue its post-processing task — all
+// in one transaction, or none of it. Deliberately plain READ COMMITTED
+// (the default): every check that has to be race-safe is a single atomic
+// `UPDATE ... WHERE ... >= $n RETURNING` statement (or, for the price, a
+// value looked up fresh inside that same statement — see the balance
+// decrement below), so there's no separate read step for a concurrent
+// checkout — or a concurrent price change — to race against, and no need
+// for FOR UPDATE or a higher isolation level. See README's Concurrency
+// section for the fuller justification.
 
 export class InsufficientFundsError extends Error {
   constructor(userId: number) {
@@ -38,10 +39,14 @@ export class UnknownProductError extends Error {
   }
 }
 
-export interface CheckoutParams {
-  userId: number;
+export interface CheckoutItem {
   productKey: string;
   quantity: number;
+}
+
+export interface CheckoutParams {
+  userId: number;
+  items: CheckoutItem[];
 }
 
 export interface CheckoutResult {
@@ -60,108 +65,142 @@ export interface CheckoutResult {
 // the comparison authored by the same clock.
 const FULFILLMENT_DELAY_INTERVAL = "interval '2 hours'";
 
+interface PricedRow {
+  product_id: number;
+  key: string;
+  currency: string;
+  price_cents: string;
+  quantity: number;
+  balance_cents: string | null;
+}
+
 export async function checkout(
   dataSource: DataSource,
-  { userId, productKey, quantity }: CheckoutParams,
+  { userId, items }: CheckoutParams,
 ): Promise<CheckoutResult> {
   return dataSource.transaction(async manager => {
-    // Plain, unlocked lookup — only for id/currency/key, none of which this
-    // system ever changes concurrently the way price can. The price itself
-    // is deliberately NOT read here: using it for amountCents would be the
-    // exact stale-price race this function has to avoid (a concurrent
-    // price change landing between this read and the balance decrement
-    // below). See that decrement for where the real price comes from.
-    const product = await manager
+    // Plain, unlocked lookup — only for existence, none of which this
+    // system ever changes concurrently the way price can. Same role the
+    // single-item version's own lookup always had, just batched via
+    // In(...) instead of one findOneBy.
+    const products = await manager
       .getRepository(Product)
-      .findOneBy({ key: productKey });
+      .findBy({ key: In(items.map(item => item.productKey)) });
+    const productByKey = new Map(
+      products.map(product => [product.key, product]),
+    );
 
-    if (!product) {
-      throw new UnknownProductError(productKey);
+    const missing = items.find(item => !productByKey.has(item.productKey));
+
+    if (missing) {
+      throw new UnknownProductError(missing.productKey);
     }
 
-    // Atomic balance decrement — and the price itself is looked up fresh
-    // *inside this same statement* (a MATERIALIZED CTE, evaluated once),
-    // not from the plain lookup above. Statement atomicity is what
-    // protects it: nothing can change price_cents mid-statement, so this
-    // needs no lock at all, and only for the duration of this one
-    // statement rather than pessimistically locking `products` (shared,
-    // frequently-read catalog data) for the rest of the transaction — the
-    // same reasoning that already kept FOR UPDATE off the stock/balance
-    // checks below, just extended to cover the price too.
+    // ONE atomic statement charges the whole order: every line's price is
+    // looked up fresh inside this same statement (never a separate read —
+    // the exact stale-price race this function has always avoided), summed,
+    // and the balance decremented once. unnest() zips the two parallel
+    // arrays into rows — no hand-built SQL text, just two plain arrays as
+    // parameters. `charge` is an inner-join gate: if its UPDATE's WHERE
+    // doesn't match (insufficient balance), it produces zero rows and the
+    // whole final SELECT returns zero rows too.
     //
-    // manager.query() on an UPDATE/DELETE always returns [rows, rowCount],
-    // never a plain rows array — even with RETURNING (verified against
-    // TypeORM's own PostgresQueryRunner.query(), which special-cases UPDATE
-    // and DELETE to `raw = [raw.rows, raw.rowCount]`; a plain array only
-    // happens for a SELECT-shaped command). Destructuring is required here:
-    // checking .length on the un-destructured result checks the *tuple's*
-    // length (always 2), so it never sees a real zero-rows case.
-    const [balanceRows] = (await manager.query(
-      `WITH current_price AS MATERIALIZED (
-         SELECT price_cents FROM products WHERE id = $1
+    // This query's outermost statement is the trailing SELECT (the UPDATE
+    // only exists inside the `charge` CTE), so — unlike a bare `UPDATE ...
+    // RETURNING` — TypeORM's postgres driver reports this as SELECT-shaped
+    // and returns a plain rows array, not a [rows, rowCount] tuple.
+    const rows = (await manager.query(
+      `WITH lines AS (
+         SELECT * FROM unnest($1::text[], $2::int[]) AS t(product_key, quantity)
+       ),
+       priced AS MATERIALIZED (
+         SELECT p.id AS product_id, p.key, p.currency, p.price_cents, l.quantity
+         FROM lines l JOIN products p ON p.key = l.product_key
+       ),
+       totals AS MATERIALIZED (
+         SELECT COALESCE(SUM(price_cents * quantity), 0) AS total_cents FROM priced
+       ),
+       charge AS (
+         UPDATE users
+         SET balance_cents = balance_cents - (SELECT total_cents FROM totals)
+         WHERE id = $3 AND balance_cents >= (SELECT total_cents FROM totals)
+         RETURNING balance_cents
        )
-       UPDATE users
-       SET balance_cents = balance_cents
-         - (SELECT price_cents FROM current_price) * $2
-       WHERE id = $3
-         AND balance_cents >= (SELECT price_cents FROM current_price) * $2
-       RETURNING balance_cents, (SELECT price_cents FROM current_price) AS price_cents`,
-      [product.id, quantity, userId],
-    )) as [
-      Array<{ balance_cents: string; price_cents: string | null }>,
-      number,
-    ];
+       SELECT priced.product_id, priced.key, priced.currency, priced.price_cents,
+              priced.quantity, (SELECT balance_cents FROM charge) AS balance_cents
+       FROM priced`,
+      [
+        items.map(item => item.productKey),
+        items.map(item => item.quantity),
+        userId,
+      ],
+    )) as PricedRow[];
 
-    if (balanceRows.length === 0) {
+    // Defensive fallback only — the plain lookup above already validated
+    // every key exists, so this only fires if a product vanished in the
+    // tiny window between that check and this statement (mirrors the
+    // single-item version's own `priceCents === null` fallback). Still
+    // reports the actually-missing key, not just "the first item."
+    if (rows.length < items.length) {
+      const foundKeys = new Set(rows.map(row => row.key));
+      const missingLine = items.find(item => !foundKeys.has(item.productKey));
+
+      throw new UnknownProductError(
+        missingLine?.productKey ?? items[0].productKey,
+      );
+    }
+
+    // Every row carries the same balance_cents (or the same null) — the
+    // `charge` CTE's WHERE either matched for everyone or no one.
+    if (rows[0].balance_cents === null) {
       throw new InsufficientFundsError(userId);
     }
 
-    const { price_cents: priceCents } = balanceRows[0];
+    const totalCents = rows
+      .reduce(
+        (sum, row) => sum + BigInt(row.price_cents) * BigInt(row.quantity),
+        0n,
+      )
+      .toString();
 
-    if (priceCents === null) {
-      // The product row vanished between the lookup above and this
-      // statement — every FK to products is RESTRICT, so this needs a
-      // never-before-ordered product deleted in the exact window between
-      // two statements of this same transaction. Vanishingly unlikely, but
-      // a distinct error beats silently mis-reporting it as insufficient
-      // funds.
-      throw new UnknownProductError(productKey);
-    }
+    // Same atomic guarded decrement per line — the one demo:race actually
+    // exercises under real concurrency. Sequential within this one
+    // transaction (not parallel — a single connection only runs one
+    // statement at a time regardless): any single OutOfStockError rolls
+    // back the whole order, the same all-or-nothing guarantee the
+    // single-item version already had.
+    for (const row of rows) {
+      const stock = await createInventoryRepository(manager).decrementStock(
+        row.product_id,
+        row.quantity,
+      );
 
-    const amountCents = (BigInt(priceCents) * BigInt(quantity)).toString();
-
-    // Same atomic pattern for stock — the one demo:race actually exercises
-    // under real concurrency. Extracted into InventoryRepository (HW #16)
-    // so it's a named, independently-testable unit instead of inline SQL —
-    // same statement, same params, no behavior change.
-    const stock = await createInventoryRepository(manager).decrementStock(
-      product.id,
-      quantity,
-    );
-
-    if (stock === null) {
-      throw new OutOfStockError(productKey);
+      if (stock === null) {
+        throw new OutOfStockError(row.key);
+      }
     }
 
     const order = await manager.getRepository(Order).save({
-      currency: product.currency,
-      amountCents,
+      currency: rows[0].currency,
+      amountCents: totalCents,
       discountCents: '0',
       status: 'paid',
       user: { id: userId },
     });
 
-    await manager.getRepository(OrderItem).save({
-      key: product.key,
-      currency: product.currency,
-      // The price actually charged (from the atomic decrement above), not
-      // product.priceCents — that field on the plain lookup can be stale
-      // the moment a concurrent price change lands.
-      priceCents,
-      quantity,
-      product: { id: product.id },
-      order: { id: order.id },
-    });
+    await manager.getRepository(OrderItem).save(
+      rows.map(row => ({
+        key: row.key,
+        currency: row.currency,
+        // The price actually charged (from the atomic decrement above),
+        // not a separately-read product price — that would be the exact
+        // stale-price race this function has to avoid.
+        priceCents: row.price_cents,
+        quantity: row.quantity,
+        product: { id: row.product_id },
+        order: { id: order.id },
+      })),
+    );
 
     // .save() only accepts plain values, not raw SQL expressions — the
     // insert QueryBuilder is needed here specifically for availableAt's

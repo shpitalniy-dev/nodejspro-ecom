@@ -13,7 +13,3 @@ export interface Order {
   items: OrderItem[];
   created_at: string;
 }
-
-export interface CreateOrderBody {
-  items: OrderItem[];
-}

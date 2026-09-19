@@ -11,6 +11,7 @@ import { OrderItem } from './entities/order-item.entity.ts';
 import { Product } from './entities/product.entity.ts';
 import type { UserRole } from './entities/user.entity.ts';
 import { User } from './entities/user.entity.ts';
+import { mustGet } from './utils/must-get.ts';
 import { AppDataSource } from './data-source.ts';
 
 // Deterministic fixtures — fixed UUIDs / keys / prices, no random(), no
@@ -223,18 +224,6 @@ const ORDERS: Array<{
     items: [{ key: 'sku-flange', quantity: 1 }],
   },
 ];
-
-function mustGet<K, V>(map: Map<K, V>, key: K): V {
-  const value = map.get(key);
-
-  if (value === undefined) {
-    throw new Error(
-      `seed fixture references a row that isn't there: ${String(key)}`,
-    );
-  }
-
-  return value;
-}
 
 type Inserted = Record<TableName, number>;
 

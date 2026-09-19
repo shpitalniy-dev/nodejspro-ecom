@@ -992,6 +992,60 @@ their own — code that manages its own `BEGIN`/`COMMIT` internally (like
 `checkout()` itself) can't be isolated this way, which is why this strategy
 applies at the repository layer, not to `checkout()` as a black box.
 
+### Test data builders
+
+`test/integration/testkit/builders.ts` — `aUser()`, `aProduct()`,
+`anInventory(productId)`, `anOrder(userId)`: chainable, valid-by-default
+(`.insertVia(manager)`), unique fields where the schema requires it (one
+shared counter — `user-1@example.com`, `sku-1`, ...). Required foreign keys
+are constructor arguments, not another `.withX()` call, so a test like
+`anOrder(999999)` for the FK-violation case reads as "an order for a user
+that doesn't exist" without a comment. A test only ever names the field
+it's actually asserting on (`anOrder(userId).withAmountCents('1000').withDiscountCents('2000')`
+for the check-constraint case) — everything else stays hidden in the
+builder's defaults.
+
+### E2E — supertest against the full Nest app
+
+```bash
+npm run test:e2e
+```
+
+Full `Test.createTestingModule({ imports: [AppModule] })`, no provider
+overrides — the real DI graph, the real `configureApp()` bootstrap config
+(`src/configure-app.ts`, shared with `src/index.ts` so an E2E test can't
+drift from what prod actually runs), DB via the same `startTestPostgres()`
+testcontainer point 1 uses.
+
+Building this turned up that `ProductsController`/`OrdersController` were
+still backed by in-memory arrays — HW#12-14's real data layer never
+actually ran behind the HTTP API. They're now wired to the real entities
+(`ProductService`/`OrderService` inject a new `DataSourceService`, a
+lazily-initialized TypeORM `DataSource` reading the same
+`DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD_FILE` config
+`DatabaseService` already does). **Lazily**, not from a lifecycle hook —
+`api`'s container has no `db_password` secret mounted (HW#13's own
+decision) and no healthcheck, so an eager `.initialize()` failing at boot
+would crash `docker compose up -d --wait` outright instead of failing only
+the requests that touch the DB, same as `/health/db` already does.
+
+`OrderService.create()` reuses `checkout()` (the same function
+`demo:race`/`demo:retry` exercise) rather than reimplementing the buy flow.
+Two consequences worth knowing:
+
+- No auth yet, and `CreateOrderRequest` has no `userId`
+  (`additionalProperties: false`) — every order is attributed to one
+  well-known placeholder customer (`storefront@example.com`), created on
+  first use with a large balance, the same kind of placeholder-actor
+  pattern `seed.ts` already uses for its concurrency demos.
+- `checkout()` buys one product per call; `OrderService.create()` requires
+  exactly one item and returns 400 otherwise — a deliberate, visible scope
+  limit, not silent multi-item mishandling.
+
+`test/e2e/orders.e2e.test.ts`: happy path (seed a product + stock directly
+via the DataSource, `POST /orders`, `GET /orders/:id`) plus one negative
+case (`GET /orders/999999` → 404).
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -1020,4 +1074,5 @@ bash scripts/backup.sh
 bash scripts/restore-drill.sh
 npm run test:integration
 npm run test:integration
+npm run test:e2e
 ```

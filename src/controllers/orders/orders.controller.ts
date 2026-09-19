@@ -13,31 +13,32 @@ import {
 
 import { IdempotencyKeyInterceptor } from '../../interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from '../../interceptors/location-header.interceptor.ts';
-import { OrderService } from '../../services/order.service.ts';
-import type { CreateOrderBody } from '../../types/orders.types.ts';
+
+import { CreateOrderDto } from './orders.dto.ts';
+import { OrdersService } from './orders.service.ts';
 
 @Controller('orders')
 export class OrdersController {
-  constructor(private readonly orderService: OrderService) {}
+  constructor(private readonly ordersService: OrdersService) {}
 
   @Get()
-  list(
+  async list(
     @Query('limit', ParseIntPipe) _limit: number,
     @Query('cursor') _cursor: string,
   ) {
-    return { items: this.orderService.list(), next_cursor: null };
+    return { items: await this.ordersService.list(), next_cursor: null };
   }
 
   @Post()
   @HttpCode(201)
   @UseInterceptors(LocationHeaderInterceptor, IdempotencyKeyInterceptor)
-  create(@Body() body: CreateOrderBody) {
-    return this.orderService.create(body.items);
+  async create(@Body() body: CreateOrderDto) {
+    return this.ordersService.create(body.items);
   }
 
   @Get(':orderId')
-  getOne(@Param('orderId', ParseIntPipe) orderId: number) {
-    const order = this.orderService.findById(orderId);
+  async getOne(@Param('orderId', ParseIntPipe) orderId: number) {
+    const order = await this.ordersService.findById(orderId);
 
     if (!order) {
       throw new NotFoundException({

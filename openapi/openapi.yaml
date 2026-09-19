@@ -254,7 +254,7 @@ components:
       type: object
       required:
         - id
-        - name
+        - key
         - price_cents
         - currency
         - created_at
@@ -262,7 +262,7 @@ components:
         id:
           type: integer
           minimum: 1
-        name:
+        key:
           type: string
         price_cents:
           type: integer
