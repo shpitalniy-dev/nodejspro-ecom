@@ -955,6 +955,43 @@ One real executed run — base backup, a "good" transaction, a simulated
 `TRUNCATE`, recovery to the instant before it, checksum MATCH, measured RTO,
 RPO = 0 — is documented in [`PITR-DRILL.md`](./PITR-DRILL.md).
 
+## Testing | HW #16
+
+Stop trusting mocks: `checkout.ts`'s repositories are tested against a real
+`postgres:17-alpine` in [testcontainers](https://node.testcontainers.org/),
+not a mock that only mirrors the developer's own belief about the schema.
+
+```bash
+npm run test:integration
+```
+
+`test/integration/` — one container per test **file** (`testkit/postgres-container.ts`
+starts it, then runs the project's real migrations, never `synchronize` —
+a synchronized schema would silently be missing the two things migrations
+hand-add, the `lower(email)` unique index and the `set_updated_at()`
+trigger, and tests would pass against a database no environment actually
+runs):
+
+| File                           | Repository under test                                                                                                                 | Covers                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `order.repository.test.ts`     | `Repository<Order>` (TypeORM's own)                                                                                                   | unique constraint (`orders_uuid_key`), FK constraint (`RESTRICT` to `users`), check constraint (`discount_not_exceeding_amount`)                       |
+| `inventory.repository.test.ts` | `createInventoryRepository()` — TypeORM's `Repository<Inventory>` extended (`.extend()`) with the atomic stock ops `checkout.ts` uses | the guarded `UPDATE ... WHERE quantity >= $1 RETURNING` decrement, and a `SUM` aggregation — SQL-dependent behavior a mock has nothing to compute from |
+
+### Isolation strategy — ROLLBACK
+
+Every test opens its own `queryRunner`, does `BEGIN`, runs against
+`queryRunner.manager`, and `ROLLBACK`s afterward — nothing a test writes is
+ever committed. Chosen over TRUNCATE or a container-per-test because it's
+effectively free (milliseconds, not another ~1-2s container start per test)
+and needs no manual cleanup between runs, which is exactly what the
+"green twice in a row" requirement checks. It only works because the
+repositories under test accept whatever `EntityManager` they're handed
+(`checkout.ts`'s own `dataSource.transaction()` connection in production,
+a test's `queryRunner.manager` here) instead of opening a connection of
+their own — code that manages its own `BEGIN`/`COMMIT` internally (like
+`checkout()` itself) can't be isolated this way, which is why this strategy
+applies at the repository layer, not to `checkout()` as a black box.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -981,4 +1018,6 @@ npm run demo:workers
 npm run demo:retry
 bash scripts/backup.sh
 bash scripts/restore-drill.sh
+npm run test:integration
+npm run test:integration
 ```

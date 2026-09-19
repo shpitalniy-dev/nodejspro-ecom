@@ -4,6 +4,7 @@ import { Order } from '../entities/order.entity.ts';
 import { OrderItem } from '../entities/order-item.entity.ts';
 import { Product } from '../entities/product.entity.ts';
 import { Task } from '../entities/task.entity.ts';
+import { createInventoryRepository } from '../repositories/inventory.repository.ts';
 
 // The core "buy now" operation: decrement balance, decrement stock, record
 // the order, queue its post-processing task — all in one transaction, or
@@ -130,16 +131,15 @@ export async function checkout(
     const amountCents = (BigInt(priceCents) * BigInt(quantity)).toString();
 
     // Same atomic pattern for stock — the one demo:race actually exercises
-    // under real concurrency.
-    const [stockRows] = (await manager.query(
-      `UPDATE inventory
-       SET quantity = quantity - $1
-       WHERE product_id = $2 AND quantity >= $1
-       RETURNING quantity`,
-      [quantity, product.id],
-    )) as [Array<{ quantity: number }>, number];
+    // under real concurrency. Extracted into InventoryRepository (HW #16)
+    // so it's a named, independently-testable unit instead of inline SQL —
+    // same statement, same params, no behavior change.
+    const stock = await createInventoryRepository(manager).decrementStock(
+      product.id,
+      quantity,
+    );
 
-    if (stockRows.length === 0) {
+    if (stock === null) {
       throw new OutOfStockError(productKey);
     }
 
