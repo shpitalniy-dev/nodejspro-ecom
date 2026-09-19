@@ -13,6 +13,27 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# Exact volume name Compose itself uses (<project>_<volume-key>) — never a
+# substring filter. `docker volume ls --filter name=...` matches ANY volume
+# on the host whose name CONTAINS that string, not just this project's; on a
+# host running other Compose projects, that risks deleting someone else's
+# volume entirely by accident. Compose derives the project name from the
+# directory unless COMPOSE_PROJECT_NAME overrides it — mirror that here
+# rather than guessing.
+PROJECT_NAME="${COMPOSE_PROJECT_NAME:-$(basename "$ROOT" | tr '[:upper:]' '[:lower:]')}"
+RESTORE_VOLUME="${PROJECT_NAME}_pgdata_restore"
+
+# The throwaway `restore` container/volume must not outlive this script,
+# success or failure — otherwise it only gets cleaned up at the START of the
+# *next* run, and never at all if there isn't one. `docker compose rm -v`
+# only removes anonymous volumes, not named ones like pgdata_restore, so the
+# explicit `docker volume rm` stays even with -v on the rm above it.
+cleanup() {
+  docker compose --profile drill rm -sfv restore >/dev/null 2>&1 || true
+  docker volume rm -f "$RESTORE_VOLUME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
 # Millisecond timer — a plain integer $(date +%s) would round this drill's
 # sub-second restore down to "0s", which isn't a measurement. bash >= 5 has
 # EPOCHREALTIME built in (cost ~0); macOS's default bash 3.2 doesn't, so
@@ -39,9 +60,7 @@ BEFORE="$(checksum postgres)"
 echo "  orders before: $BEFORE  (count|sum(amount_cents))"
 
 echo "━━━ 3. Clean slate: throwaway 'restore' target ━━━"
-docker compose --profile drill rm -sf restore >/dev/null 2>&1 || true
-RESTORE_VOLUME="$(docker volume ls -q --filter name=pgdata_restore)"
-[ -n "$RESTORE_VOLUME" ] && docker volume rm -f "$RESTORE_VOLUME" >/dev/null 2>&1
+cleanup
 docker compose --profile drill up -d --wait restore
 
 EMPTY="$(docker compose exec -T restore psql -U admin -d ecom -Atc \
@@ -73,4 +92,4 @@ echo "  RTO (this drill): $(secs "$RESTORE_MS")s — pg_restore itself, on top o
 echo "  RPO: bounded by the backup schedule (backup.cron, nightly) — up to ~24h of data lost in the worst case"
 
 echo
-echo "Cleanup: docker compose --profile drill rm -sf restore && docker volume rm \$(docker volume ls -q --filter name=pgdata_restore)"
+echo "Cleanup: automatic on exit (trap) — no manual step needed."
