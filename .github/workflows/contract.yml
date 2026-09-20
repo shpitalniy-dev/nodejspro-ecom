@@ -43,9 +43,23 @@ jobs:
         env:
           PROVIDER_VERSION: ${{ github.sha }}
 
+      # can-i-deploy requires either a 'to' tag or an 'environment' param —
+      # confirmed by a real CI failure (400: "Must specify either an
+      # environment or a 'to' tag."), not by guessing. The local demo below
+      # tags ecom-api as `prod` manually, but this broker is fresh and torn
+      # down every job run, so there's no pre-existing tag to check
+      # against here — tag the consumer version this same job just
+      # published, then ask whether the provider version this same job
+      # just verified is safe to deploy against it.
+      - name: Tag consumer version
+        run: |
+          curl -sf -X PUT \
+            "$PACT_BROKER_URL/pacticipants/storefront-web/versions/${{ github.sha }}/tags/ci" \
+            -H 'Content-Type: application/json'
+
       - name: can-i-deploy
         run: |
-          curl -sf "$PACT_BROKER_URL/can-i-deploy?pacticipant=ecom-api&version=${{ github.sha }}" -o cid.json
+          curl -sf "$PACT_BROKER_URL/can-i-deploy?pacticipant=ecom-api&version=${{ github.sha }}&to=ci" -o cid.json
           cat cid.json
           node -e "process.exit(require('./cid.json').summary.deployable === true ? 0 : 1)"
 

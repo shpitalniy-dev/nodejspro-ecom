@@ -1236,10 +1236,19 @@ docker compose rm -f broker broker-db
 `.github/workflows/contract.yml`, job `contract`, runs on every PR and
 push to `main`/`hw-16`: starts the broker, generates the contract
 (`test:contract`), publishes it, runs `verify:provider` against the broker
-(`publishVerificationResult: true`), then a `can-i-deploy` step that fails
-the job outright if `deployable` isn't `true`. Consumer and provider are
-both versioned by `github.sha` — one repo produces both sides here, so
-there's no separate consumer version to track.
+(`publishVerificationResult: true`), tags the consumer version it just
+published as `ci`, then a `can-i-deploy` step that fails the job outright
+if `deployable` isn't `true`. Consumer and provider are both versioned by
+`github.sha` — one repo produces both sides here, so there's no separate
+consumer version to track.
+
+The `ci` tag exists because the raw `/can-i-deploy` endpoint requires
+either a `to` tag or an `environment` param — found out from a real failed
+run (`400: "Must specify either an environment or a 'to' tag."`), not by
+guessing. Unlike the local demo below, which tags `ecom-api` as `prod`
+manually, this job's broker is started and torn down fresh every run, so
+there's no pre-existing tag to check against — it has to create and
+consume its own tag within the same run.
 
 ## Grading
 
