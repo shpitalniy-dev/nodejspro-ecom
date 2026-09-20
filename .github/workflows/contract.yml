@@ -1,9 +1,13 @@
 name: Contract
 
 on:
+  # pull_request already covers every push to a branch with an open PR
+  # (hw-16, right now) — push only needs to cover main itself, for a push
+  # that bypasses a PR. Listing hw-16 here too doubled every run: one from
+  # push, one from pull_request, on the exact same commit.
   pull_request:
   push:
-    branches: [main, hw-16]
+    branches: [main]
 
 jobs:
   contract:
