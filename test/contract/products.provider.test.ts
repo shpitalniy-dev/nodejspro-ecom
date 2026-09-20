@@ -69,7 +69,14 @@ describe('Pact provider verification: ecom-api against the contract', () => {
       ...(brokerUrl
         ? {
             pactBrokerUrl: brokerUrl,
-            pactBrokerToken: process.env.PACT_BROKER_TOKEN,
+            // Verifier rejects a pactBrokerToken key that's present but
+            // undefined (it wants a non-empty string or no key at all) —
+            // confirmed by running this against the local, no-auth broker
+            // with PACT_BROKER_TOKEN unset. Only include it when it's
+            // actually set.
+            ...(process.env.PACT_BROKER_TOKEN
+              ? { pactBrokerToken: process.env.PACT_BROKER_TOKEN }
+              : {}),
             publishVerificationResult: true,
             providerVersion: process.env.PROVIDER_VERSION ?? '1.0.0',
             providerVersionBranch:

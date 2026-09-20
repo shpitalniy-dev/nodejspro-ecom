@@ -1104,8 +1104,142 @@ verifies against the broker instead and publishes the result
 and the later broker/`can-i-deploy` gate use, per the spec's own
 requirement that `verify:provider` be one fixed command either way.
 
-The Pact Broker service and the CI `can-i-deploy` gate are the next step,
-not yet built.
+### Pact Broker (local)
+
+```bash
+docker compose --profile contract up -d --wait broker
+```
+
+Opt-in, like `pitr`/`drill`/`pgbackups` — a Pact Broker (`broker` +
+`broker-db`, its own throwaway Postgres) that stores published contracts
+and verification results and answers `can-i-deploy`. Runs at
+`http://127.0.0.1:6620`, `PACT_BROKER_ALLOW_PUBLIC_READ: true`, no auth
+configured — a local registry, not a secret-worthy service.
+
+To stop it: `docker compose stop broker broker-db && docker compose rm -f broker broker-db`
+— **not** `docker compose down -v`. `down` (even after `up --profile
+contract`) acts on the _entire_ compose project, not just the profile you
+started; `-v` on it removes every named volume in the file, profile or
+not. Found out the hard way while writing this section: it deleted the
+main `postgres`/`wal_archive`/`basebackup` volumes even though only the
+broker had ever been brought up. `stop`/`rm` accept explicit service
+names, `down` doesn't — that's the actual fix, not just "don't pass `-v`".
+
+### Secrets: which path is which
+
+Per the spec, `PACT_BROKER_URL`/`PACT_BROKER_TOKEN` are secrets, not
+constants in code — `products.provider.test.ts` only ever reads them from
+`process.env`. Two legal ways to supply them:
+
+- **Primary**: `bash scripts/with-secrets.sh dev npm run verify:provider`
+  — pulls `PACT_BROKER_URL`/`PACT_BROKER_TOKEN` from the HW#11 Infisical
+  vault's `dev` environment, same wrapper `migrate`/`seed`/the `demo:*`
+  scripts already use. (Those two keys still need to be added to the vault
+  for this path to work end to end — not done in this pass.)
+- **Emergency/grading**: `PACT_BROKER_URL=... npm run verify:provider`
+  directly — `scripts/with-secrets.sh` already special-cases `SKIP_VAULT=1`
+  to skip Infisical entirely and just exec the command with whatever's
+  already exported, exactly like every other `with-secrets.sh`-wrapped
+  script in this project's Grading section.
+
+`PACT_BROKER_URL` defaulting to `http://127.0.0.1:6620` in the CI workflow
+isn't a violation of "no secrets in code" — it's the address of a broker
+that same CI job starts itself, not a real deployment's credential.
+
+### Local gate demonstration
+
+The full `publish → verify → tag → can-i-deploy` sequence, run for real
+against the broker above (`storefront-web`/`ecom-api`, both versioned
+`1.0.0` for this manual demo — CI uses the commit SHA instead):
+
+```bash
+# 1. start the broker — the registry that will store the contract, the
+#    verification result, and answer can-i-deploy
+docker compose --profile contract up -d --wait broker
+
+# 2. consumer: regenerate the contract describing what storefront-web
+#    expects from ecom-api
+npm run test:contract   # fresh pacts/storefront-web-ecom-api.json
+
+# 3. publish that contract to the broker under consumer version 1.0.0 —
+#    pure bookkeeping, nothing checked against reality yet
+curl -X PUT "http://127.0.0.1:6620/pacts/provider/ecom-api/consumer/storefront-web/version/1.0.0" \
+  -H 'Content-Type: application/json' -d @pacts/storefront-web-ecom-api.json
+# → 201
+
+# 4. provider: replay the contract against the REAL running ecom-api and
+#    publish the pass/fail result back to the broker
+PACT_BROKER_URL=http://127.0.0.1:6620 PROVIDER_VERSION=1.0.0 npm run verify:provider
+# → exit 0, "Results published to Pact Broker"
+
+# 5. ask "if I deploy storefront-web@1.0.0 now, does it work against
+#    whatever ecom-api version is actually tagged prod?"
+curl "http://127.0.0.1:6620/can-i-deploy?pacticipant=storefront-web&version=1.0.0&to=prod"
+```
+
+**Before** tagging `ecom-api`'s version as `prod` — no `ecom-api` version
+is tagged `prod` yet, so the broker has no candidate to compare against
+and correctly refuses to guess (this is the proof the gate can actually
+say no, not just always rubber-stamp `true`):
+
+```json
+{
+  "summary": {
+    "deployable": null,
+    "reason": "There is no verified pact between version 1.0.0 of storefront-web and the latest version of ecom-api with tag prod (no such version exists)",
+    "success": 0,
+    "failed": 0,
+    "unknown": 1
+  }
+}
+```
+
+```bash
+# 6. mark "ecom-api v1.0.0 is what's currently in prod" — in a real
+#    pipeline this happens automatically right after an actual deploy
+curl -X PUT "http://127.0.0.1:6620/pacticipants/ecom-api/versions/1.0.0/tags/prod" \
+  -H 'Content-Type: application/json'
+# → 201
+```
+
+**After** tagging, the same `can-i-deploy` call — now there's a real
+candidate to check against:
+
+```json
+{
+  "summary": {
+    "deployable": true,
+    "reason": "All required verification results are published and successful",
+    "success": 1,
+    "failed": 0,
+    "unknown": 0
+  }
+}
+```
+
+That's the gate actually working, not always-green: `unknown` before a
+provider version is tagged `prod` (the broker has no basis to say yes),
+`true` only once a verified, successful result exists _for that tag_.
+
+```bash
+# teardown — stop/rm, NOT `docker compose down -v`: `down` acts on the
+# WHOLE compose project regardless of --profile, and -v would remove the
+# main postgres/wal_archive/basebackup volumes along with it (found out the
+# hard way). stop/rm accept explicit service names, so only these two
+# containers are touched.
+docker compose stop broker broker-db
+docker compose rm -f broker broker-db
+```
+
+### CI gate
+
+`.github/workflows/contract.yml`, job `contract`, runs on every PR and
+push to `main`/`hw-16`: starts the broker, generates the contract
+(`test:contract`), publishes it, runs `verify:provider` against the broker
+(`publishVerificationResult: true`), then a `can-i-deploy` step that fails
+the job outright if `deployable` isn't `true`. Consumer and provider are
+both versioned by `github.sha` — one repo produces both sides here, so
+there's no separate consumer version to track.
 
 ## Grading
 
