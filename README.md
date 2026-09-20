@@ -1046,6 +1046,67 @@ Two consequences worth knowing:
 via the DataSource, `POST /orders`, `GET /orders/:id`) plus one negative
 case (`GET /orders/999999` → 404).
 
+### Contract testing (Pact)
+
+```bash
+npm run test:contract    # consumer: generates pacts/*.json
+npm run verify:provider  # provider: replays it against the real app
+```
+
+Consumer-driven contract testing: instead of running a full second service
+against this API in CI (slow, flaky, often not even possible locally), a
+**consumer** test declares exactly what it expects from a **provider**
+endpoint as an executable spec. Running that test spins up a Pact mock
+server, exercises it like a real HTTP call, and — as a side effect —
+writes out the **contract**: a plain JSON file describing the interaction
+(request, expected response shape, and a named **provider state**, e.g.
+`"product with key contract-test-product exists"`, telling the provider
+what precondition to seed before replaying the request for real). No pact
+is hand-written; it only exists because the consumer test ran.
+
+This project has no separate consumer service, so `test/contract/products.consumer.test.ts`
+plays the role of a storefront frontend (`storefront-web`) calling this
+API (`ecom-api`)'s `GET /products/:id` — the mechanics (mock server,
+matchers, provider state, generated JSON) are identical to a real
+cross-repo setup. Response fields use **matchers** (`like(...)`) rather
+than pinned values, so the contract asserts shape/type, not a coincidental
+example value.
+
+Running the test writes `pacts/storefront-web-ecom-api.json`. That
+directory is gitignored — like `build/`/`.test-build/`, it's a generated
+artifact, reproduced by `npm run test:contract` on every run (including in
+CI/grading), not something to commit and let drift out of sync with the
+test that produces it.
+
+### Provider verification
+
+`npm run verify:provider` (`test/contract/products.provider.test.ts`) boots
+the real app the same way E2E does — `startTestPostgres()` +
+`startTestApp()` — except it also calls `app.listen(0)` (an OS-assigned
+free port), because Pact's `Verifier` makes actual HTTP requests rather
+than driving the app in-process like supertest does. For each interaction
+in the pact, it runs that interaction's named `stateHandlers` entry (here,
+inserting exactly one product via the `aProduct()` builder), then replays
+the request against the real `AppModule` route and asserts the response
+matches.
+
+The seeded product deliberately never sets an explicit id — `Product.id`
+is `GENERATED ALWAYS AS IDENTITY`, so an explicit insert would need
+`OVERRIDING SYSTEM VALUE`, which TypeORM's `.save()` doesn't add. Instead,
+the container is fresh per run and this is the only row ever inserted into
+it, so it deterministically lands on id `1`, matching the consumer
+contract's hardcoded `path: '/products/1'`.
+
+The script branches on `PACT_BROKER_URL`: unset (today), it verifies
+against the local `pacts/storefront-web-ecom-api.json`; when set, it
+verifies against the broker instead and publishes the result
+(`publishVerificationResult: true`) — the same script both this AC bullet
+and the later broker/`can-i-deploy` gate use, per the spec's own
+requirement that `verify:provider` be one fixed command either way.
+
+The Pact Broker service and the CI `can-i-deploy` gate are the next step,
+not yet built.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -1075,4 +1136,6 @@ bash scripts/restore-drill.sh
 npm run test:integration
 npm run test:integration
 npm run test:e2e
+npm run test:contract
+npm run verify:provider
 ```
