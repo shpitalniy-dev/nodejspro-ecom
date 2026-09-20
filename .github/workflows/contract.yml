@@ -18,9 +18,14 @@ jobs:
       PACT_BROKER_URL: http://127.0.0.1:6620
       PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      # v7, not v4 — v4's own action runtime still declares node20
+      # internally (GitHub auto-upgrades it to run on node24 anyway, hence
+      # just a deprecation warning rather than a failure, but v7 declares
+      # node24 natively and drops the warning outright). Confirmed by
+      # reading both versions' action.yml, not assumed.
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '24'
 
