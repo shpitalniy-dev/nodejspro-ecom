@@ -15,10 +15,10 @@ export class ProductsController {
 
   @Get()
   async list(
-    @Query('limit', ParseIntPipe) _limit: number,
-    @Query('cursor') _cursor: string,
+    @Query('limit', ParseIntPipe) limit: number,
+    @Query('cursor') cursor?: string,
   ) {
-    return { items: await this.productsService.list(), next_cursor: null };
+    return this.productsService.list(limit, cursor);
   }
 
   @Get(':productId')

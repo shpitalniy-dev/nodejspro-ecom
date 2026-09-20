@@ -23,10 +23,10 @@ export class OrdersController {
 
   @Get()
   async list(
-    @Query('limit', ParseIntPipe) _limit: number,
-    @Query('cursor') _cursor: string,
+    @Query('limit', ParseIntPipe) limit: number,
+    @Query('cursor') cursor?: string,
   ) {
-    return { items: await this.ordersService.list(), next_cursor: null };
+    return this.ordersService.list(limit, cursor);
   }
 
   @Post()

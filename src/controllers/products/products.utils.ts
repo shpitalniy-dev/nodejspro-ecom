@@ -1,6 +1,7 @@
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
-import type { Product } from '../../types/products.types.ts';
-import type { Currency } from '../../types/types.ts';
+import type { Currency } from '../../types/index.ts';
+
+import type { Product } from './products.types.ts';
 
 export function toApiProduct(entity: ProductEntity): Product {
   return {

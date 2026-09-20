@@ -2,21 +2,35 @@ import { Injectable } from '@nestjs/common';
 
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
-import type { Product } from '../../types/products.types.ts';
+import { decodeCursor, encodeCursor } from '../../utils/cursor.ts';
 
+import type { Product, ProductListResponse } from './products.types.ts';
 import { toApiProduct } from './products.utils.ts';
 
 @Injectable()
 export class ProductsService {
   constructor(private readonly dataSourceService: DataSourceService) {}
 
-  async list(): Promise<Product[]> {
+  async list(limit = 20, cursor?: string): Promise<ProductListResponse> {
     const manager = await this.dataSourceService.getManager();
-    const products = await manager
+    const qb = manager
       .getRepository(ProductEntity)
-      .find({ order: { id: 'ASC' } });
+      .createQueryBuilder('product')
+      .orderBy('product.id', 'ASC')
+      .take(limit + 1); // one extra row, to know if there's a next page
 
-    return products.map(toApiProduct);
+    if (cursor) {
+      qb.andWhere('product.id > :id', decodeCursor(cursor));
+    }
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    return {
+      items: page.map(toApiProduct),
+      next_cursor: hasMore ? encodeCursor(page[page.length - 1].id) : null,
+    };
   }
 
   async findById(id: number): Promise<Product | undefined> {

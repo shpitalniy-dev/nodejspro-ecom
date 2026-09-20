@@ -1,6 +1,7 @@
 import { Order as OrderEntity } from '../../entities/order.entity.ts';
-import type { Order } from '../../types/orders.types.ts';
-import type { Currency } from '../../types/types.ts';
+import type { Currency } from '../../types/index.ts';
+
+import type { Order } from './orders.types.ts';
 
 export const ORDER_RELATIONS = { items: { product: true } } as const;
 

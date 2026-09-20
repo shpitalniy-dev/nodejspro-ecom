@@ -15,10 +15,11 @@ import {
   InsufficientFundsError,
   OutOfStockError,
 } from '../../transactions/checkout.ts';
-import type { Order } from '../../types/orders.types.ts';
+import { decodeCursor, encodeCursor } from '../../utils/cursor.ts';
 import { mustGet } from '../../utils/must-get.ts';
 
 import type { CreateOrderItemDto } from './orders.dto.ts';
+import type { Order, OrderListResponse } from './orders.types.ts';
 import { ORDER_RELATIONS, toApiOrder } from './orders.utils.ts';
 
 // No auth yet (Architecture Note: "Auth lands at HW#24, not sooner") and
@@ -36,14 +37,28 @@ const STOREFRONT_CUSTOMER_BALANCE_CENTS = '100000000';
 export class OrdersService {
   constructor(private readonly dataSourceService: DataSourceService) {}
 
-  async list(): Promise<Order[]> {
+  async list(limit = 20, cursor?: string): Promise<OrderListResponse> {
     const manager = await this.dataSourceService.getManager();
-    const orders = await manager.getRepository(OrderEntity).find({
-      relations: ORDER_RELATIONS,
-      order: { id: 'ASC' },
-    });
+    const qb = manager
+      .getRepository(OrderEntity)
+      .createQueryBuilder('order')
+      .leftJoinAndSelect('order.items', 'items')
+      .leftJoinAndSelect('items.product', 'product')
+      .orderBy('order.id', 'ASC')
+      .take(limit + 1); // one extra row, to know if there's a next page
 
-    return orders.map(toApiOrder);
+    if (cursor) {
+      qb.andWhere('order.id > :id', decodeCursor(cursor));
+    }
+
+    const rows = await qb.getMany();
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+
+    return {
+      items: page.map(toApiOrder),
+      next_cursor: hasMore ? encodeCursor(page[page.length - 1].id) : null,
+    };
   }
 
   async findById(id: number): Promise<Order | undefined> {
