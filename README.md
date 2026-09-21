@@ -1020,7 +1020,7 @@ testcontainer point 1 uses.
 Building this turned up that `ProductsController`/`OrdersController` were
 still backed by in-memory arrays — HW#12-14's real data layer never
 actually ran behind the HTTP API. They're now wired to the real entities
-(`ProductService`/`OrderService` inject a new `DataSourceService`, a
+(`ProductsService`/`OrdersService` inject a new `DataSourceService`, a
 lazily-initialized TypeORM `DataSource` reading the same
 `DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD_FILE` config
 `DatabaseService` already does). **Lazily**, not from a lifecycle hook —
@@ -1029,22 +1029,25 @@ decision) and no healthcheck, so an eager `.initialize()` failing at boot
 would crash `docker compose up -d --wait` outright instead of failing only
 the requests that touch the DB, same as `/health/db` already does.
 
-`OrderService.create()` reuses `checkout()` (the same function
-`demo:race`/`demo:retry` exercise) rather than reimplementing the buy flow.
-Two consequences worth knowing:
+`OrdersService.create()` reuses `checkout()` (the same function
+`demo:race`/`demo:retry` exercise) rather than reimplementing the buy flow
+— including its multi-item support, so one order can charge for several
+different products in a single atomic checkout. No auth yet, and
+`CreateOrderRequest` has no `userId` (`additionalProperties: false`) —
+every order is attributed to one well-known placeholder customer
+(`storefront@example.com`), created on first use with a large balance, the
+same kind of placeholder-actor pattern `seed.ts` already uses for its
+concurrency demos.
 
-- No auth yet, and `CreateOrderRequest` has no `userId`
-  (`additionalProperties: false`) — every order is attributed to one
-  well-known placeholder customer (`storefront@example.com`), created on
-  first use with a large balance, the same kind of placeholder-actor
-  pattern `seed.ts` already uses for its concurrency demos.
-- `checkout()` buys one product per call; `OrderService.create()` requires
-  exactly one item and returns 400 otherwise — a deliberate, visible scope
-  limit, not silent multi-item mishandling.
-
-`test/e2e/orders.e2e.test.ts`: happy path (seed a product + stock directly
-via the DataSource, `POST /orders`, `GET /orders/:id`) plus one negative
-case (`GET /orders/999999` → 404).
+`test/e2e/orders.e2e.test.ts` and `test/e2e/products.e2e.test.ts`: happy
+path (seed a product + stock directly via the DataSource, `POST /orders`,
+`GET /orders/:id`), a multi-item order across two products, three negative
+cases (`GET /orders/999999` → 404; a price above the storefront customer's
+balance → 409, stock left untouched; quantity above available stock → 409,
+no `OrderItem` created), a regression guard for a real TypeORM pitfall
+(`leftJoinAndSelect` + `take()` truncating a multi-item order's items at a
+page boundary), and cursor-pagination walks for both `/orders` and
+`/products` (including a garbage-cursor → 400 case).
 
 ### Contract testing (Pact)
 
@@ -1233,8 +1236,8 @@ docker compose rm -f broker broker-db
 
 ### CI gate
 
-`.github/workflows/contract.yml`, job `contract`, runs on every PR and
-push to `main`/`hw-16`: starts the broker, generates the contract
+`.github/workflows/contract.yml`, job `contract`, runs on every pull
+request and every push to `main`: starts the broker, generates the contract
 (`test:contract`), publishes it, runs `verify:provider` against the broker
 (`publishVerificationResult: true`), tags the consumer version it just
 published as `ci`, then a `can-i-deploy` step that fails the job outright
