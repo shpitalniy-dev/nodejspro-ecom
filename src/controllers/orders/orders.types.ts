@@ -1,4 +1,5 @@
-import { Currency } from './types.ts';
+import type { ListResponse } from '../../types/index.ts';
+import { Currency } from '../../types/index.ts';
 
 export interface OrderItem {
   productId: number;
@@ -14,6 +15,4 @@ export interface Order {
   created_at: string;
 }
 
-export interface CreateOrderBody {
-  items: OrderItem[];
-}
+export type OrderListResponse = ListResponse<Order>;

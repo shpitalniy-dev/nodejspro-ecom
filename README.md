@@ -955,6 +955,329 @@ One real executed run — base backup, a "good" transaction, a simulated
 `TRUNCATE`, recovery to the instant before it, checksum MATCH, measured RTO,
 RPO = 0 — is documented in [`PITR-DRILL.md`](./PITR-DRILL.md).
 
+## Testing | HW #16
+
+Stop trusting mocks: `checkout.ts`'s repositories are tested against a real
+`postgres:17-alpine` in [testcontainers](https://node.testcontainers.org/),
+not a mock that only mirrors the developer's own belief about the schema.
+
+```bash
+npm run test:integration
+```
+
+`test/integration/` — one container per test **file** (`testkit/postgres-container.ts`
+starts it, then runs the project's real migrations, never `synchronize` —
+a synchronized schema would silently be missing the two things migrations
+hand-add, the `lower(email)` unique index and the `set_updated_at()`
+trigger, and tests would pass against a database no environment actually
+runs):
+
+| File                           | Repository under test                                                                                                                 | Covers                                                                                                                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `order.repository.test.ts`     | `Repository<Order>` (TypeORM's own)                                                                                                   | unique constraint (`orders_uuid_key`), FK constraint (`RESTRICT` to `users`), check constraint (`discount_not_exceeding_amount`)                       |
+| `inventory.repository.test.ts` | `createInventoryRepository()` — TypeORM's `Repository<Inventory>` extended (`.extend()`) with the atomic stock ops `checkout.ts` uses | the guarded `UPDATE ... WHERE quantity >= $1 RETURNING` decrement, and a `SUM` aggregation — SQL-dependent behavior a mock has nothing to compute from |
+
+### Isolation strategy — ROLLBACK
+
+Every test opens its own `queryRunner`, does `BEGIN`, runs against
+`queryRunner.manager`, and `ROLLBACK`s afterward — nothing a test writes is
+ever committed. Chosen over TRUNCATE or a container-per-test because it's
+effectively free (milliseconds, not another ~1-2s container start per test)
+and needs no manual cleanup between runs, which is exactly what the
+"green twice in a row" requirement checks. It only works because the
+repositories under test accept whatever `EntityManager` they're handed
+(`checkout.ts`'s own `dataSource.transaction()` connection in production,
+a test's `queryRunner.manager` here) instead of opening a connection of
+their own — code that manages its own `BEGIN`/`COMMIT` internally (like
+`checkout()` itself) can't be isolated this way, which is why this strategy
+applies at the repository layer, not to `checkout()` as a black box.
+
+### Test data builders
+
+`test/integration/testkit/builders.ts` — `aUser()`, `aProduct()`,
+`anInventory(productId)`, `anOrder(userId)`: chainable, valid-by-default
+(`.insertVia(manager)`), unique fields where the schema requires it (one
+shared counter — `user-1@example.com`, `sku-1`, ...). Required foreign keys
+are constructor arguments, not another `.withX()` call, so a test like
+`anOrder(999999)` for the FK-violation case reads as "an order for a user
+that doesn't exist" without a comment. A test only ever names the field
+it's actually asserting on (`anOrder(userId).withAmountCents('1000').withDiscountCents('2000')`
+for the check-constraint case) — everything else stays hidden in the
+builder's defaults.
+
+### E2E — supertest against the full Nest app
+
+```bash
+npm run test:e2e
+```
+
+Full `Test.createTestingModule({ imports: [AppModule] })`, no provider
+overrides — the real DI graph, the real `configureApp()` bootstrap config
+(`src/configure-app.ts`, shared with `src/index.ts` so an E2E test can't
+drift from what prod actually runs), DB via the same `startTestPostgres()`
+testcontainer point 1 uses.
+
+Building this turned up that `ProductsController`/`OrdersController` were
+still backed by in-memory arrays — HW#12-14's real data layer never
+actually ran behind the HTTP API. They're now wired to the real entities
+(`ProductsService`/`OrdersService` inject a new `DataSourceService`, a
+lazily-initialized TypeORM `DataSource` reading the same
+`DB_HOST`/`DB_PORT`/`DB_NAME`/`DB_USER`/`DB_PASSWORD_FILE` config
+`DatabaseService` already does). **Lazily**, not from a lifecycle hook —
+`api`'s container has no `db_password` secret mounted (HW#13's own
+decision) and no healthcheck, so an eager `.initialize()` failing at boot
+would crash `docker compose up -d --wait` outright instead of failing only
+the requests that touch the DB, same as `/health/db` already does.
+
+`OrdersService.create()` reuses `checkout()` (the same function
+`demo:race`/`demo:retry` exercise) rather than reimplementing the buy flow
+— including its multi-item support, so one order can charge for several
+different products in a single atomic checkout. No auth yet, and
+`CreateOrderRequest` has no `userId` (`additionalProperties: false`) —
+every order is attributed to one well-known placeholder customer
+(`storefront@example.com`), created on first use with a large balance, the
+same kind of placeholder-actor pattern `seed.ts` already uses for its
+concurrency demos.
+
+`test/e2e/orders.e2e.test.ts` and `test/e2e/products.e2e.test.ts`: happy
+path (seed a product + stock directly via the DataSource, `POST /orders`,
+`GET /orders/:id`), a multi-item order across two products, three negative
+cases (`GET /orders/999999` → 404; a price above the storefront customer's
+balance → 409, stock left untouched; quantity above available stock → 409,
+no `OrderItem` created), a regression guard for a real TypeORM pitfall
+(`leftJoinAndSelect` + `take()` truncating a multi-item order's items at a
+page boundary), and cursor-pagination walks for both `/orders` and
+`/products` (including a garbage-cursor → 400 case).
+
+### Contract testing (Pact)
+
+```bash
+npm run test:contract    # consumer: generates pacts/*.json
+npm run verify:provider  # provider: replays it against the real app
+```
+
+Consumer-driven contract testing: instead of running a full second service
+against this API in CI (slow, flaky, often not even possible locally), a
+**consumer** test declares exactly what it expects from a **provider**
+endpoint as an executable spec. Running that test spins up a Pact mock
+server, exercises it like a real HTTP call, and — as a side effect —
+writes out the **contract**: a plain JSON file describing the interaction
+(request, expected response shape, and a named **provider state**, e.g.
+`"product with key contract-test-product exists"`, telling the provider
+what precondition to seed before replaying the request for real). No pact
+is hand-written; it only exists because the consumer test ran.
+
+This project has no separate consumer service, so `test/contract/products.consumer.test.ts`
+plays the role of a storefront frontend (`storefront-web`) calling this
+API (`ecom-api`)'s `GET /products/:id` — the mechanics (mock server,
+matchers, provider state, generated JSON) are identical to a real
+cross-repo setup. Response fields use **matchers** (`like(...)`) rather
+than pinned values, so the contract asserts shape/type, not a coincidental
+example value.
+
+Running the test writes `pacts/storefront-web-ecom-api.json`. That
+directory is gitignored — like `build/`/`.test-build/`, it's a generated
+artifact, reproduced by `npm run test:contract` on every run (including in
+CI/grading), not something to commit and let drift out of sync with the
+test that produces it.
+
+### Provider verification
+
+`npm run verify:provider` (`test/contract/products.provider.test.ts`) boots
+the real app the same way E2E does — `startTestPostgres()` +
+`startTestApp()` — except it also calls `app.listen(0)` (an OS-assigned
+free port), because Pact's `Verifier` makes actual HTTP requests rather
+than driving the app in-process like supertest does. For each interaction
+in the pact, it runs that interaction's named `stateHandlers` entry (here,
+inserting exactly one product via the `aProduct()` builder), then replays
+the request against the real `AppModule` route and asserts the response
+matches.
+
+The seeded product deliberately never sets an explicit id — `Product.id`
+is `GENERATED ALWAYS AS IDENTITY`, so an explicit insert would need
+`OVERRIDING SYSTEM VALUE`, which TypeORM's `.save()` doesn't add. Instead,
+the container is fresh per run and this is the only row ever inserted into
+it, so it deterministically lands on id `1`, matching the consumer
+contract's hardcoded `path: '/products/1'`.
+
+The script branches on `PACT_BROKER_URL`: unset (today), it verifies
+against the local `pacts/storefront-web-ecom-api.json`; when set, it
+verifies against the broker instead and publishes the result
+(`publishVerificationResult: true`) — the same script both this AC bullet
+and the later broker/`can-i-deploy` gate use, per the spec's own
+requirement that `verify:provider` be one fixed command either way.
+
+### Pact Broker (local)
+
+```bash
+docker compose --profile contract up -d --wait broker
+```
+
+Opt-in, like `pitr`/`drill`/`pgbackups` — a Pact Broker (`broker` +
+`broker-db`, its own throwaway Postgres) that stores published contracts
+and verification results and answers `can-i-deploy`. Runs at
+`http://127.0.0.1:6620`, `PACT_BROKER_ALLOW_PUBLIC_READ: true`, no auth
+configured — a local registry, not a secret-worthy service.
+
+To stop it: `docker compose stop broker broker-db && docker compose rm -f broker broker-db`
+— **not** `docker compose down -v`. `down` (even after `up --profile
+contract`) acts on the _entire_ compose project, not just the profile you
+started; `-v` on it removes every named volume in the file, profile or
+not. Found out the hard way while writing this section: it deleted the
+main `postgres`/`wal_archive`/`basebackup` volumes even though only the
+broker had ever been brought up. `stop`/`rm` accept explicit service
+names, `down` doesn't — that's the actual fix, not just "don't pass `-v`".
+
+### Secrets: which path is which
+
+Per the spec, `PACT_BROKER_URL`/`PACT_BROKER_TOKEN` are secrets, not
+constants in code — `products.provider.test.ts` only ever reads them from
+`process.env`, never hardcodes a broker address or token.
+
+In practice, though, there's currently no real secret to store: both
+brokers this project actually talks to (the local docker-compose one, and
+CI's own — see below) are local-only, spun up and torn down by the same
+process that uses them, with a well-known, non-secret address
+(`http://127.0.0.1:6620` either way). A persistent, externally-reachable
+broker (self-hosted, or a hosted service like PactFlow) is what would turn
+`PACT_BROKER_URL`/`PACT_BROKER_TOKEN` into real secrets worth vaulting —
+this project doesn't have one (evaluated PactFlow's free tier; it's a
+30-day trial, not a standing answer for a course project, and self-hosting
+persistent infra was more than this pass warranted).
+
+So, today:
+
+- **What actually works**: `PACT_BROKER_URL=... npm run verify:provider`
+  directly — what the grader's AC reproduction uses, and what the local
+  gate demonstration below uses.
+- **`bash scripts/with-secrets.sh dev npm run verify:provider`** (the
+  `migrate`/`seed`/`demo:*` pattern) would be the right primary path _if_
+  a persistent broker existed — the wrapper and the `process.env` reads on
+  the code side are both already correct and need no changes — but right
+  now there's nothing real in Infisical's `dev` environment for it to
+  pull, because there's nothing real for `PACT_BROKER_URL` to point at.
+  `scripts/with-secrets.sh` still special-cases `SKIP_VAULT=1` to skip
+  Infisical entirely, which is what makes the env-var form above work.
+
+### Local gate demonstration
+
+The full `publish → verify → tag → can-i-deploy` sequence, run for real
+against the broker above (`storefront-web`/`ecom-api`, both versioned
+`1.0.0` for this manual demo — CI uses the commit SHA instead):
+
+```bash
+# 1. start the broker — the registry that will store the contract, the
+#    verification result, and answer can-i-deploy
+docker compose --profile contract up -d --wait broker
+
+# 2. consumer: regenerate the contract describing what storefront-web
+#    expects from ecom-api
+npm run test:contract   # fresh pacts/storefront-web-ecom-api.json
+
+# 3. publish that contract to the broker under consumer version 1.0.0 —
+#    pure bookkeeping, nothing checked against reality yet
+curl -X PUT "http://127.0.0.1:6620/pacts/provider/ecom-api/consumer/storefront-web/version/1.0.0" \
+  -H 'Content-Type: application/json' -d @pacts/storefront-web-ecom-api.json
+# → 201
+
+# 4. provider: replay the contract against the REAL running ecom-api and
+#    publish the pass/fail result back to the broker
+PACT_BROKER_URL=http://127.0.0.1:6620 PROVIDER_VERSION=1.0.0 npm run verify:provider
+# → exit 0, "Results published to Pact Broker"
+
+# 5. ask "if I deploy storefront-web@1.0.0 now, does it work against
+#    whatever ecom-api version is actually tagged prod?"
+curl "http://127.0.0.1:6620/can-i-deploy?pacticipant=storefront-web&version=1.0.0&to=prod"
+```
+
+**Before** tagging `ecom-api`'s version as `prod` — no `ecom-api` version
+is tagged `prod` yet, so the broker has no candidate to compare against
+and correctly refuses to guess (this is the proof the gate can actually
+say no, not just always rubber-stamp `true`):
+
+```json
+{
+  "summary": {
+    "deployable": null,
+    "reason": "There is no verified pact between version 1.0.0 of storefront-web and the latest version of ecom-api with tag prod (no such version exists)",
+    "success": 0,
+    "failed": 0,
+    "unknown": 1
+  }
+}
+```
+
+```bash
+# 6. mark "ecom-api v1.0.0 is what's currently in prod" — in a real
+#    pipeline this happens automatically right after an actual deploy
+curl -X PUT "http://127.0.0.1:6620/pacticipants/ecom-api/versions/1.0.0/tags/prod" \
+  -H 'Content-Type: application/json'
+# → 201
+```
+
+**After** tagging, the same `can-i-deploy` call — now there's a real
+candidate to check against:
+
+```json
+{
+  "summary": {
+    "deployable": true,
+    "reason": "All required verification results are published and successful",
+    "success": 1,
+    "failed": 0,
+    "unknown": 0
+  }
+}
+```
+
+That's the gate actually working, not always-green: `unknown` before a
+provider version is tagged `prod` (the broker has no basis to say yes),
+`true` only once a verified, successful result exists _for that tag_.
+
+```bash
+# teardown — stop/rm, NOT `docker compose down -v`: `down` acts on the
+# WHOLE compose project regardless of --profile, and -v would remove the
+# main postgres/wal_archive/basebackup volumes along with it (found out the
+# hard way). stop/rm accept explicit service names, so only these two
+# containers are touched.
+docker compose stop broker broker-db
+docker compose rm -f broker broker-db
+```
+
+### CI gate
+
+`.github/workflows/contract.yml`, job `contract`, runs on every pull
+request and every push to `main`: starts the broker, generates the contract
+(`test:contract`), publishes it, runs `verify:provider` against the broker
+(`publishVerificationResult: true`), tags the consumer version it just
+published as `ci`, then a `can-i-deploy` step that fails the job outright
+if `deployable` isn't `true`. Consumer and provider are both versioned by
+`github.sha` — one repo produces both sides here, so there's no separate
+consumer version to track.
+
+The `ci` tag exists because the raw `/can-i-deploy` endpoint requires
+either a `to` tag or an `environment` param — found out from a real failed
+run (`400: "Must specify either an environment or a 'to' tag."`), not by
+guessing. Unlike the local demo above, which tags `ecom-api` as `prod`
+manually, this job's broker is started and torn down fresh every run, so
+there's no pre-existing tag to check against — it has to create and
+consume its own tag within the same run.
+
+**Be clear about what this proves and what it doesn't** (review feedback
+caught this): with a broker scoped to one job, `can-i-deploy` here can
+only ever agree with whatever `verify:provider` already returned — there's
+nothing external for it to disagree with, no matter which tag or query
+shape is used. It's a real, working `publish → verify → can-i-deploy`
+pipeline end to end, and it satisfies the letter of the AC, but it isn't a
+deploy gate capable of independently blocking anything. The **local gate
+demonstration above** is the one that actually proves that — its broker
+persists across the whole demo, so `deployable` genuinely differs
+(`unknown` before tagging, `true` after) depending on state from an
+_earlier_ step, not the one asking the question. Closing that gap for CI
+too would need a broker that outlives a single job run (self-hosted or a
+hosted service like PactFlow) — evaluated and skipped for this pass; see
+"Secrets: which path is which" above for why.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -981,4 +1304,9 @@ npm run demo:workers
 npm run demo:retry
 bash scripts/backup.sh
 bash scripts/restore-drill.sh
+npm run test:integration
+npm run test:integration
+npm run test:e2e
+npm run test:contract
+npm run verify:provider
 ```

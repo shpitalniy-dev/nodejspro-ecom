@@ -1,0 +1,96 @@
+name: Contract
+
+on:
+  # pull_request already covers every push to a branch with an open PR
+  # (hw-16, right now) — push only needs to cover main itself, for a push
+  # that bypasses a PR. Listing hw-16 here too doubled every run: one from
+  # push, one from pull_request, on the exact same commit.
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    env:
+      # Not a secret — it's the address of the broker this same job starts
+      # via docker compose, a couple of steps below.
+      PACT_BROKER_URL: http://127.0.0.1:6620
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+    steps:
+      # v7, not v4 — v4's own action runtime still declares node20
+      # internally (GitHub auto-upgrades it to run on node24 anyway, hence
+      # just a deprecation warning rather than a failure, but v7 declares
+      # node24 natively and drops the warning outright). Confirmed by
+      # reading both versions' action.yml, not assumed.
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - run: npm ci
+
+      - name: Start Pact Broker
+        run: docker compose --profile contract up -d --wait broker
+
+      - name: Consumer — generate contract
+        run: npm run test:contract
+
+      - name: Publish contract to broker
+        run: |
+          curl -sf -X PUT \
+            "$PACT_BROKER_URL/pacts/provider/ecom-api/consumer/storefront-web/version/${{ github.sha }}" \
+            -H 'Content-Type: application/json' \
+            -d @pacts/storefront-web-ecom-api.json
+
+      # PACT_BROKER_URL being set switches products.provider.test.ts into
+      # broker mode: it pulls the contract from the broker instead of the
+      # local file, and publishes its verification result back.
+      - name: Provider verification (publishes result to broker)
+        run: npm run verify:provider
+        env:
+          PROVIDER_VERSION: ${{ github.sha }}
+
+      # can-i-deploy requires either a 'to' tag or an 'environment' param —
+      # confirmed by a real CI failure (400: "Must specify either an
+      # environment or a 'to' tag."), not by guessing. The local demo below
+      # tags ecom-api as `prod` manually, but this broker is fresh and torn
+      # down every job run, so there's no pre-existing tag to check
+      # against here — tag the consumer version this same job just
+      # published, then ask whether the provider version this same job
+      # just verified is safe to deploy against it.
+      - name: Tag consumer version
+        run: |
+          curl -sf -X PUT \
+            "$PACT_BROKER_URL/pacticipants/storefront-web/versions/${{ github.sha }}/tags/ci" \
+            -H 'Content-Type: application/json'
+
+      # Honesty note (review feedback): this is a SMOKE TEST, not a real
+      # deploy gate. The broker only exists inside this job — the `ci` tag
+      # it checks against was created two steps above, by this same run.
+      # No query shape fixes that: with nothing external for it to
+      # disagree with, `deployable` here can only ever restate whatever
+      # verify:provider already returned. A genuine gate needs a broker
+      # that outlives the run asking the question, which this repo
+      # doesn't have (no persistent hosting — see README's Contract
+      # testing section for why, and for the one demo that DOES prove the
+      # gate can say no: the local docker-compose walkthrough, whose
+      # broker persists across its own publish → verify → tag → check
+      # steps). This step still earns its place: it's a real, working
+      # publish → verify → can-i-deploy pipeline end to end, and it
+      # satisfies the AC's literal requirement for one.
+      - name: can-i-deploy (smoke test — see comment above)
+        run: |
+          curl -sf "$PACT_BROKER_URL/can-i-deploy?pacticipant=ecom-api&version=${{ github.sha }}&to=ci" -o cid.json
+          cat cid.json
+          node -e "process.exit(require('./cid.json').summary.deployable === true ? 0 : 1)"
+
+      # `down -v` acts on the WHOLE compose project, not just this profile
+      # — confirmed the hard way locally, where it wiped the main postgres
+      # service's data volumes even though only the broker was ever started
+      # via `up`. `stop`/`rm` do accept explicit service names, unlike
+      # `down`, so this only ever touches the two broker containers.
+      - name: Stop Pact Broker
+        if: always()
+        run: docker compose stop broker broker-db && docker compose rm -f broker broker-db

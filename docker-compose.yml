@@ -218,6 +218,47 @@ services:
           cpus: '0.1'
           memory: 64M
 
+  # Opt-in only: `docker compose --profile contract up -d --wait broker`.
+  # Pact Broker for HW#16 point 6 — stores the consumer/provider contract
+  # plus verification results, and answers can-i-deploy. Own tiny Postgres,
+  # not the project's real one — a contract registry has nothing to do with
+  # the app's domain data. Public-read, no auth: a local throwaway registry,
+  # not a secret-worthy service — which is also why PACT_BROKER_TOKEN stays
+  # genuinely optional (see README's Contract testing section).
+  broker-db:
+    image: postgres:17-alpine
+    profiles: ['contract']
+    environment:
+      POSTGRES_USER: broker
+      POSTGRES_PASSWORD: broker
+      POSTGRES_DB: broker
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U broker -d broker']
+      interval: 2s
+      retries: 15
+
+  broker:
+    image: pactfoundation/pact-broker:2.142.0-pactbroker2.120.0
+    profiles: ['contract']
+    ports:
+      - '127.0.0.1:6620:9292'
+    environment:
+      PACT_BROKER_DATABASE_URL: postgres://broker:broker@broker-db/broker
+      PACT_BROKER_ALLOW_PUBLIC_READ: 'true'
+    depends_on:
+      broker-db:
+        condition: service_healthy
+    healthcheck:
+      # 127.0.0.1, not localhost — inside the container localhost can
+      # resolve to ::1, and puma (the broker's server) only listens on IPv4.
+      test:
+        [
+          'CMD-SHELL',
+          'wget -q -O /dev/null http://127.0.0.1:9292/diagnostic/status/heartbeat',
+        ]
+      interval: 3s
+      retries: 30
+
   # Opt-in only: `docker compose --profile rotation up -d`. Reactively (and,
   # via reconcile.sh, unconditionally on its own startup) keeps app_user's
   # Postgres password in sync with whatever's current in Infisical. Not part

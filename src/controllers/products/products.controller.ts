@@ -7,23 +7,23 @@ import {
   Query,
 } from '@nestjs/common';
 
-import { ProductService } from '../../services/product.service.ts';
+import { ProductsService } from './products.service.ts';
 
 @Controller('products')
 export class ProductsController {
-  constructor(private readonly productService: ProductService) {}
+  constructor(private readonly productsService: ProductsService) {}
 
   @Get()
-  list(
-    @Query('limit', ParseIntPipe) _limit: number,
-    @Query('cursor') _cursor: string,
+  async list(
+    @Query('limit', ParseIntPipe) limit: number,
+    @Query('cursor') cursor?: string,
   ) {
-    return { items: this.productService.list(), next_cursor: null };
+    return this.productsService.list(limit, cursor);
   }
 
   @Get(':productId')
-  getOne(@Param('productId', ParseIntPipe) productId: number) {
-    const product = this.productService.findById(productId);
+  async getOne(@Param('productId', ParseIntPipe) productId: number) {
+    const product = await this.productsService.findById(productId);
 
     if (!product) {
       throw new NotFoundException({

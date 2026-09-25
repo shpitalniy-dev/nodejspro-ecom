@@ -78,8 +78,7 @@ async function main(): Promise<void> {
       Array.from({ length: ATTEMPTS }, () =>
         checkout(ds, {
           userId: buyer.id,
-          productKey: RACE_PRODUCT_KEY,
-          quantity: 1,
+          items: [{ productKey: RACE_PRODUCT_KEY, quantity: 1 }],
         }),
       ),
     );
