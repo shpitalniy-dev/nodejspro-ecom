@@ -2,7 +2,10 @@ import path from 'path';
 
 import { MatchersV3, PactV3 } from '@pact-foundation/pact';
 
-import { CONTRACT_PRODUCT_KEY } from './testkit/fixtures.ts';
+import {
+  CONTRACT_PRODUCT_ID,
+  CONTRACT_PRODUCT_KEY,
+} from './testkit/fixtures.ts';
 
 const { like } = MatchersV3;
 
@@ -15,14 +18,16 @@ describe('Pact consumer: storefront-web expects a product by id', () => {
 
   test('GET /products/:id returns the product', async () => {
     provider
-      .given(`product with key ${CONTRACT_PRODUCT_KEY} exists`)
+      .given(`product with key ${CONTRACT_PRODUCT_KEY} exists`, {
+        id: CONTRACT_PRODUCT_ID,
+      })
       .uponReceiving('a request for that product')
-      .withRequest({ method: 'GET', path: '/products/1' })
+      .withRequest({ method: 'GET', path: `/products/${CONTRACT_PRODUCT_ID}` })
       .willRespondWith({
         status: 200,
         headers: { 'Content-Type': 'application/json; charset=utf-8' },
         body: {
-          id: like(1),
+          id: like(CONTRACT_PRODUCT_ID),
           key: like(CONTRACT_PRODUCT_KEY),
           price_cents: like(1000),
           currency: like('USD'),
@@ -31,7 +36,9 @@ describe('Pact consumer: storefront-web expects a product by id', () => {
       });
 
     await provider.executeTest(async mockServer => {
-      const res = await fetch(`${mockServer.url}/products/1`);
+      const res = await fetch(
+        `${mockServer.url}/products/${CONTRACT_PRODUCT_ID}`,
+      );
 
       expect(res.status).toBe(200);
 

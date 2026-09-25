@@ -66,7 +66,21 @@ jobs:
             "$PACT_BROKER_URL/pacticipants/storefront-web/versions/${{ github.sha }}/tags/ci" \
             -H 'Content-Type: application/json'
 
-      - name: can-i-deploy
+      # Honesty note (review feedback): this is a SMOKE TEST, not a real
+      # deploy gate. The broker only exists inside this job — the `ci` tag
+      # it checks against was created two steps above, by this same run.
+      # No query shape fixes that: with nothing external for it to
+      # disagree with, `deployable` here can only ever restate whatever
+      # verify:provider already returned. A genuine gate needs a broker
+      # that outlives the run asking the question, which this repo
+      # doesn't have (no persistent hosting — see README's Contract
+      # testing section for why, and for the one demo that DOES prove the
+      # gate can say no: the local docker-compose walkthrough, whose
+      # broker persists across its own publish → verify → tag → check
+      # steps). This step still earns its place: it's a real, working
+      # publish → verify → can-i-deploy pipeline end to end, and it
+      # satisfies the AC's literal requirement for one.
+      - name: can-i-deploy (smoke test — see comment above)
         run: |
           curl -sf "$PACT_BROKER_URL/can-i-deploy?pacticipant=ecom-api&version=${{ github.sha }}&to=ci" -o cid.json
           cat cid.json

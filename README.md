@@ -1132,22 +1132,32 @@ names, `down` doesn't — that's the actual fix, not just "don't pass `-v`".
 
 Per the spec, `PACT_BROKER_URL`/`PACT_BROKER_TOKEN` are secrets, not
 constants in code — `products.provider.test.ts` only ever reads them from
-`process.env`. Two legal ways to supply them:
+`process.env`, never hardcodes a broker address or token.
 
-- **Primary**: `bash scripts/with-secrets.sh dev npm run verify:provider`
-  — pulls `PACT_BROKER_URL`/`PACT_BROKER_TOKEN` from the HW#11 Infisical
-  vault's `dev` environment, same wrapper `migrate`/`seed`/the `demo:*`
-  scripts already use. (Those two keys still need to be added to the vault
-  for this path to work end to end — not done in this pass.)
-- **Emergency/grading**: `PACT_BROKER_URL=... npm run verify:provider`
-  directly — `scripts/with-secrets.sh` already special-cases `SKIP_VAULT=1`
-  to skip Infisical entirely and just exec the command with whatever's
-  already exported, exactly like every other `with-secrets.sh`-wrapped
-  script in this project's Grading section.
+In practice, though, there's currently no real secret to store: both
+brokers this project actually talks to (the local docker-compose one, and
+CI's own — see below) are local-only, spun up and torn down by the same
+process that uses them, with a well-known, non-secret address
+(`http://127.0.0.1:6620` either way). A persistent, externally-reachable
+broker (self-hosted, or a hosted service like PactFlow) is what would turn
+`PACT_BROKER_URL`/`PACT_BROKER_TOKEN` into real secrets worth vaulting —
+this project doesn't have one (evaluated PactFlow's free tier; it's a
+30-day trial, not a standing answer for a course project, and self-hosting
+persistent infra was more than this pass warranted).
 
-`PACT_BROKER_URL` defaulting to `http://127.0.0.1:6620` in the CI workflow
-isn't a violation of "no secrets in code" — it's the address of a broker
-that same CI job starts itself, not a real deployment's credential.
+So, today:
+
+- **What actually works**: `PACT_BROKER_URL=... npm run verify:provider`
+  directly — what the grader's AC reproduction uses, and what the local
+  gate demonstration below uses.
+- **`bash scripts/with-secrets.sh dev npm run verify:provider`** (the
+  `migrate`/`seed`/`demo:*` pattern) would be the right primary path _if_
+  a persistent broker existed — the wrapper and the `process.env` reads on
+  the code side are both already correct and need no changes — but right
+  now there's nothing real in Infisical's `dev` environment for it to
+  pull, because there's nothing real for `PACT_BROKER_URL` to point at.
+  `scripts/with-secrets.sh` still special-cases `SKIP_VAULT=1` to skip
+  Infisical entirely, which is what makes the env-var form above work.
 
 ### Local gate demonstration
 
@@ -1248,10 +1258,25 @@ consumer version to track.
 The `ci` tag exists because the raw `/can-i-deploy` endpoint requires
 either a `to` tag or an `environment` param — found out from a real failed
 run (`400: "Must specify either an environment or a 'to' tag."`), not by
-guessing. Unlike the local demo below, which tags `ecom-api` as `prod`
+guessing. Unlike the local demo above, which tags `ecom-api` as `prod`
 manually, this job's broker is started and torn down fresh every run, so
 there's no pre-existing tag to check against — it has to create and
 consume its own tag within the same run.
+
+**Be clear about what this proves and what it doesn't** (review feedback
+caught this): with a broker scoped to one job, `can-i-deploy` here can
+only ever agree with whatever `verify:provider` already returned — there's
+nothing external for it to disagree with, no matter which tag or query
+shape is used. It's a real, working `publish → verify → can-i-deploy`
+pipeline end to end, and it satisfies the letter of the AC, but it isn't a
+deploy gate capable of independently blocking anything. The **local gate
+demonstration above** is the one that actually proves that — its broker
+persists across the whole demo, so `deployable` genuinely differs
+(`unknown` before tagging, `true` after) depending on state from an
+_earlier_ step, not the one asking the question. Closing that gap for CI
+too would need a broker that outlives a single job run (self-hosted or a
+hosted service like PactFlow) — evaluated and skipped for this pass; see
+"Secrets: which path is which" above for why.
 
 ## Grading
 
