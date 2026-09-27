@@ -28,15 +28,29 @@ services:
     # valid value satisfies the schema. Points at pgbouncer, not postgres
     # directly, as of HW #15 — the app (like every DB-touching script) goes
     # through the pooler now.
+    #
+    # DB_USER/DB_PASSWORD_FILE (HW #18): every homework up to now only ever
+    # needed migrate/seed/demo scripts (host-side, real Postgres creds via
+    # scripts/with-secrets.sh) or test:integration/e2e (their own
+    # testcontainers app) to reach the database — never THIS container over
+    # HTTP. HW #18's AC is the first one that curls this container directly
+    # (GET/PATCH .../orders/...), so it's the first time "api has no
+    # password file" (see below) actually breaks anything real.
     environment:
       PORT: ${PORT:-3000}
       DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@pgbouncer:6432/ecom}
-    # Deliberately disconnected from Infisical for now, to meet HW #13's
-    # acceptance criteria — `docker compose up -d --wait`, then
-    # migrate/seed/demo/report run straight against Postgres as admin with
-    # /scripts/with-secrets.sh.
-    # volumes:
-    #   - infisical_secrets:/shared-secrets:ro
+      DB_USER: ${DB_USER:-app_user}
+      DB_PASSWORD_FILE: ${DB_PASSWORD_FILE:-/shared-secrets/db-password}
+    # HW #13 deliberately skipped wiring api up to the real infisical-agent
+    # (below, profile: rotation) so grading with no vault access wouldn't
+    # depend on it — that decision was about not requiring vault access,
+    # not about api needing no password at all. db-password-seed (also
+    # below) fills the exact same shared volume/path a real rotation agent
+    # would, with a password that's already plaintext in db/init.sql — so
+    # api reads it exactly the same way either way, and switching to real
+    # rotation later (`--profile rotation`) needs no change here.
+    volumes:
+      - infisical_secrets:/shared-secrets:ro
     init: true
     restart: unless-stopped
     ports:
@@ -47,9 +61,23 @@ services:
         max-size: 10m
         max-file: '5'
     depends_on:
-      # Same reason as the volumes note above.
-      # infisical-agent:
-      #   condition: service_healthy
+      db-password-seed:
+        condition: service_completed_successfully
+      # required: false makes this a soft dependency: when `rotation` isn't
+      # among the active profiles, infisical-agent doesn't exist in the
+      # deployment at all, and Compose just skips this entry — confirmed by
+      # testing both `docker compose config` and a real `up -d --wait` with
+      # no `--profile rotation`, neither errors nor warns. Without
+      # `required: false` here, Compose refuses to even start ANYTHING
+      # ("depends on undefined service"), because a plain `condition:`
+      # dependency requires the target to exist in the resolved project.
+      # When `--profile rotation` IS active, this still waits for the
+      # agent's own healthcheck (real Infisical auth + a synced Postgres
+      # password) before api starts — the one thing db-password-seed alone
+      # can't guarantee, since it only ever seeds a placeholder.
+      infisical-agent:
+        condition: service_healthy
+        required: false
       # Transitively waits on postgres too — pgbouncer's own depends_on
       # already requires it healthy first.
       pgbouncer:
@@ -62,6 +90,29 @@ services:
         reservations:
           cpus: '0.25'
           memory: 300M
+
+  # One-shot, same shape as postgres-volumes-init below: writes app_user's
+  # DB password — already plaintext in db/init.sql, not a real secret — into
+  # the SAME shared volume/path the real infisical-agent (profile: rotation)
+  # writes to, so api can read a password file with zero vault access. This
+  # is a stand-in for that agent, not a second mechanism next to it — but
+  # infisical_secrets is a NAMED volume, so a real rotated password already
+  # written there by an earlier `--profile rotation` run survives a later
+  # plain `docker compose up` (no `-v`). `test -s` (already this repo's own
+  # idiom — see infisical-agent's healthcheck below) makes this a no-op
+  # once a real password exists, so it can never stomp one. Ordering still
+  # matters on the very first `--profile rotation` run, when neither exists
+  # yet — infisical-agent's own depends_on below makes sure it always
+  # starts (and so writes the real password) AFTER this placeholder, never
+  # racing it.
+  db-password-seed:
+    image: postgres:17-alpine
+    entrypoint:
+      - sh
+      - -c
+      - test -s /shared-secrets/db-password || echo -n "postgres_app_password" > /shared-secrets/db-password
+    volumes:
+      - infisical_secrets:/shared-secrets
 
   # One-shot: fresh named volumes are root-owned, but archive_mode's
   # archive_command below runs as the `postgres` user — without this,
@@ -288,6 +339,12 @@ services:
       - ./infisical/reconcile.sh:/etc/infisical/reconcile.sh:ro
       - infisical_secrets:/shared-secrets
     depends_on:
+      # Guarantees db-password-seed always runs (and finishes) first, so on
+      # the very first `--profile rotation` run — before either has written
+      # anything — this agent's real write is always what's left in the
+      # file, never raced by the seed's placeholder landing after it.
+      db-password-seed:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
     healthcheck:
