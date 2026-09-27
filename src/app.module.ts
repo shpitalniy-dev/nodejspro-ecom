@@ -3,7 +3,10 @@ import { ConfigModule } from '@nestjs/config';
 
 import { validate } from './config/env.schema.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
+import { OrderEventsService } from './controllers/orders/order-events.service.ts';
+import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
 import { OrdersController } from './controllers/orders/orders.controller.ts';
+import { OrdersGateway } from './controllers/orders/orders.gateway.ts';
 import { OrdersService } from './controllers/orders/orders.service.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
 import { ProductsService } from './controllers/products/products.service.ts';
@@ -18,6 +21,9 @@ import { IdempotencyStore } from './services/idempotency-store.service.ts';
   providers: [
     ProductsService,
     OrdersService,
+    OrderEventsService,
+    OrdersGateway,
+    OrderOwnershipGuard,
     IdempotencyStore,
     IdempotencyKeyInterceptor,
     LocationHeaderInterceptor,

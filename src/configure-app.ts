@@ -19,7 +19,13 @@ export function configureApp(app: NestExpressApplication): void {
       apiSpec: path.join(process.cwd(), 'openapi/openapi.yaml'),
       validateRequests: true,
       validateResponses: true,
-      ignorePaths: /^\/health/,
+      // /health: not in the contract at all.
+      // /orders/:id/events (HW#18): IS in the contract's URL space in
+      // spirit, but validateResponses:true buffers a response to check it
+      // against a schema — fundamentally incompatible with an SSE stream
+      // that's designed to never end. Excluded here rather than silently
+      // left unvalidated by omission.
+      ignorePaths: /^\/health|^\/orders\/\d+\/events$/,
     }),
   );
 

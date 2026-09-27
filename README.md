@@ -116,7 +116,7 @@ in HW#12; the rest land with the HW that actually needs them.
 - **Deploy** — Docker Compose, single host (`docker-compose.yml` for prod,
   `docker-compose.override.yml` for dev). No orchestrator planned.
 
-### 4. Trade-offs
+### 4. Sequencing decisions
 
 - **Auth lands at HW#24, not sooner** — building it before the contract,
   config, and data-layer work (HW#9-#12) was solid would mean redoing
@@ -1278,6 +1278,111 @@ too would need a broker that outlives a single job run (self-hosted or a
 hosted service like PactFlow) — evaluated and skipped for this pass; see
 "Secrets: which path is which" above for why.
 
+## Realtime Notifications | HW #18
+
+The Marketplace API could already change an order's status (`checkout()`'s
+`paid`); a buyer only found out on reload. This HW makes that change reach
+a connected client instantly, over two transports sharing one event bus:
+
+- **WebSocket** — `OrdersGateway` (socket.io platform, `@nestjs/websockets`).
+  A client `join`s `orders:<id>`, gated by `OrderOwnershipGuard` (see
+  below), then receives an `order.status` event on that room whenever the
+  order's status changes.
+- **SSE** — `GET /orders/:id/events`. The same events, as a
+  `text/event-stream`, replayable via `Last-Event-ID` from an in-memory
+  per-order buffer.
+
+Both are fed by `OrderEventsService` — a plain RxJS `Subject` + per-order
+buffer with no socket.io or SSE knowledge of its own.
+`OrdersService.updateStatus()` (called from the new
+`PATCH /orders/:id/status`) is the only thing that ever calls `publish()`;
+the gateway and the SSE controller are just subscribers. One bus, two
+transports — neither the controller nor the gateway ever emits directly.
+
+### Ownership check: honest about what it actually verifies
+
+No auth exists yet in this app (auth lands at HW#24 — see the Architecture
+Note above; every order placed through the storefront today is attributed
+to one placeholder customer). The homework requires refusing an anonymous
+or non-owning `join`, so `OrderOwnershipGuard` (`CanActivate`, applied to
+the gateway's `join` handler via `@UseGuards`) does a real check against
+real data: the client states its own `userId` on `join`, and the guard
+loads that order's actual owner from the DB and compares. This is **not**
+authentication — nothing stops a client from claiming any `userId` — but
+it **is** a genuine authorization check, and it's the first guard in this
+codebase: real auth (HW#24) replaces what asserts the identity, not what
+checks it against the order.
+
+A rejected join throws inside the guard (`WsException`), which Nest turns
+into a socket `exception` event on the client, not a `{ok:false}` ack. To
+see a refusal by hand:
+
+```js
+socket.on('exception', console.log);
+socket.emit('join', { orderId: 1 }, ack => console.log('ack', ack)); // no userId -> anonymous
+socket.emit('join', { orderId: 1, userId: 999999 }, ack =>
+  console.log('ack', ack),
+); // wrong owner -> forbidden
+```
+
+### Verifying each acceptance criterion
+
+```bash
+docker compose up -d --wait
+npm run migrate
+npm run seed
+```
+
+```bash
+# SSE header
+curl -sN --max-time 2 -D - -o /dev/null http://localhost:3000/orders/1/events \
+  | grep -i '^content-type'
+# content-type: text/event-stream
+
+# event format: run the line above without -D/-o, then in a second
+# terminal change the order's status and watch the id:/event:/data: block
+# appear in the first terminal
+curl -X PATCH http://localhost:3000/orders/1/status \
+  -H 'content-type: application/json' -d '{"status":"paid"}'
+
+# Last-Event-ID: at least 4 status changes on order 1 first
+for s in pending paid refunded paid; do
+  curl -s -X PATCH http://localhost:3000/orders/1/status \
+    -H 'content-type: application/json' -d "{\"status\":\"$s\"}" > /dev/null
+done
+curl -sN --max-time 2 -H 'Last-Event-ID: 3' http://localhost:3000/orders/1/events \
+  | grep '^id:' | head -1
+# id: 4  (> 3 — the missed event arrives, nothing already-seen repeats)
+
+# room isolation: main run, then the control run
+node scripts/realtime-demo.mjs;             echo "exit=$?"
+node scripts/realtime-demo.mjs --same-room; echo "exit=$?"
+```
+
+### Trade-offs: WebSocket vs SSE
+
+| Criterion          | WebSocket                                                                                                                                                           | SSE                                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Channel direction  | Full-duplex — the same socket carries `join` up and `order.status` down                                                                                             | Server → client only; changing a status still needs a separate `PATCH` request                                                                                          |
+| Reconnect / resume | Manual, or socket.io's built-in reconnect + re-`join` — this gateway holds no session to resume into, a client just rejoins                                         | `EventSource` reconnects on its own and resends `Last-Event-ID`; `OrderEventsService`'s buffer replays exactly what was missed                                          |
+| Infra requirements | Needs `Upgrade` to work end-to-end (some proxies/load balancers mishandle it); 2+ instances need `@socket.io/redis-adapter` for rooms to see each other (see below) | Plain HTTP — anything that passes through a long-lived response works; still needs the same fan-out across 2+ instances, since the buffer/`Subject` here is per-process |
+| Cost per event     | One frame over an already-open socket                                                                                                                               | A few bytes (`id:`/`event:`/`data:`) over an already-open response                                                                                                      |
+
+For order-status notifications specifically, **SSE is what I'd keep in
+prod**: the direction this feature actually needs is server → client, and
+SSE gets reconnect-with-resume for free from a browser API instead of
+hand-rolled logic. WebSocket earns its complexity when the client needs to
+talk back on the same channel (chat, live cursors, collaborative editing)
+— this feature never does; its only client → server message (`join`) is a
+one-time setup step, not an ongoing stream.
+
+Both transports currently only work correctly with **one instance**: rooms
+and `OrderEventsService`'s `Subject`/buffer live in that one process's
+memory, so a second instance behind a load balancer would never see an
+event a status change on the first instance published. Lecture 18's step 7
+fix — `@socket.io/redis-adapter` — is what closes that gap, and is
+deliberately out of scope for this single-instance HW.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access:
@@ -1302,6 +1407,8 @@ npm run report
 npm run demo:race
 npm run demo:workers
 npm run demo:retry
+npm run demo:realtime
+npm run demo:realtime -- --same-room
 bash scripts/backup.sh
 bash scripts/restore-drill.sh
 npm run test:integration
