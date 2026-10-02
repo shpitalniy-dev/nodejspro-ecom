@@ -187,6 +187,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /orders/{orderId}/status:
+    patch:
+      operationId: updateOrderStatus
+      summary: Change an order's status
+      description: >
+        HW#18: the write side of the realtime notification feature. A
+        successful change publishes an `order.status` event to that
+        order's WebSocket room and SSE stream (see the Realtime
+        Notifications section in README.md) — this endpoint itself just
+        performs the status write.
+      tags:
+        - orders
+      parameters:
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateOrderStatusRequest'
+      responses:
+        '200':
+          description: The updated order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Order'
+        '400':
+          description: Invalid orderId or request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Order not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
 components:
   parameters:
     Limit:
@@ -295,13 +340,17 @@ components:
         - currency
         - items
         - created_at
+        - user_id
       properties:
         id:
           type: integer
           minimum: 1
         status:
           type: string
-          enum: [unpaid, paid]
+          # Widened from [unpaid, paid] for HW#18: checkout() only ever
+          # produced those two, but the new PATCH .../status endpoint
+          # below (and existing seed data) can produce all four.
+          enum: [unpaid, pending, paid, refunded]
         total_cents:
           type: integer
           description: Total order amount in the smallest currency unit (e.g. cents).
@@ -314,6 +363,14 @@ components:
         created_at:
           type: string
           format: date-time
+        user_id:
+          type: integer
+          minimum: 1
+          description: >
+            Id of the order's owning customer. Exposed for HW#18's WS
+            ownership check and its headless demo script — there's no auth
+            yet, so a client has no other way to learn which user id an
+            order belongs to.
 
     CreateOrderRequest:
       type: object
@@ -325,6 +382,16 @@ components:
           minItems: 1
           items:
             $ref: '#/components/schemas/OrderItem'
+      additionalProperties: false
+
+    UpdateOrderStatusRequest:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum: [unpaid, pending, paid, refunded]
       additionalProperties: false
 
     Problem:

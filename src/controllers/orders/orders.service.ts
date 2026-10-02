@@ -2,10 +2,12 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
 import { In } from 'typeorm';
 
+import type { OrderStatus } from '../../entities/order.entity.ts';
 import { Order as OrderEntity } from '../../entities/order.entity.ts';
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
 import { User as UserEntity } from '../../entities/user.entity.ts';
@@ -18,6 +20,7 @@ import {
 import { decodeCursor, encodeCursor } from '../../utils/cursor.ts';
 import { mustGet } from '../../utils/must-get.ts';
 
+import { OrderEventsService } from './order-events.service.ts';
 import type { CreateOrderItemDto } from './orders.dto.ts';
 import type { Order, OrderListResponse } from './orders.types.ts';
 import { ORDER_RELATIONS, toApiOrder } from './orders.utils.ts';
@@ -35,7 +38,10 @@ const STOREFRONT_CUSTOMER_BALANCE_CENTS = '100000000';
 
 @Injectable()
 export class OrdersService {
-  constructor(private readonly dataSourceService: DataSourceService) {}
+  constructor(
+    private readonly dataSourceService: DataSourceService,
+    private readonly orderEvents: OrderEventsService,
+  ) {}
 
   async list(limit = 20, cursor?: string): Promise<OrderListResponse> {
     const manager = await this.dataSourceService.getManager();
@@ -44,6 +50,8 @@ export class OrdersService {
       .createQueryBuilder('order')
       .leftJoinAndSelect('order.items', 'items')
       .leftJoinAndSelect('items.product', 'product')
+      // HW#18: toApiOrder() now always reads entity.user.id.
+      .leftJoinAndSelect('order.user', 'user')
       .orderBy('order.id', 'ASC')
       .take(limit + 1); // one extra row, to know if there's a next page
 
@@ -69,6 +77,50 @@ export class OrdersService {
     });
 
     return order ? toApiOrder(order) : undefined;
+  }
+
+  // Lean lookup for OrderOwnershipGuard — only the two columns a WS join's
+  // ownership check needs, not the full items/product graph findById loads.
+  async getOwnerId(orderId: number): Promise<number | undefined> {
+    const manager = await this.dataSourceService.getManager();
+    const order = await manager.getRepository(OrderEntity).findOne({
+      where: { id: orderId },
+      relations: { user: true },
+      select: { id: true, user: { id: true } },
+    });
+
+    return order?.user.id;
+  }
+
+  // HW#18's realtime status-change endpoint — no transition-validity rules
+  // (any status to any status), since building an order state machine is
+  // out of scope for this HW; the point here is the notification, not the
+  // workflow. The room-emit is a side effect of this business-logic
+  // method, never something OrdersController triggers directly.
+  async updateStatus(orderId: number, status: OrderStatus): Promise<Order> {
+    const manager = await this.dataSourceService.getManager();
+    const result = await manager
+      .getRepository(OrderEntity)
+      .update({ id: orderId }, { status, updatedAt: new Date() });
+
+    if (result.affected === 0) {
+      throw new NotFoundException({
+        title: 'Order not found',
+        detail: `Order "${orderId}" not found.`,
+      });
+    }
+
+    this.orderEvents.publish(orderId, status);
+
+    const order = await this.findById(orderId);
+
+    if (!order) {
+      throw new Error(
+        `order ${orderId} vanished immediately after its own status update`,
+      );
+    }
+
+    return order;
   }
 
   async create(items: CreateOrderItemDto[]): Promise<Order> {

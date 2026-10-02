@@ -38,7 +38,11 @@ export default [
     },
   },
   {
-    files: ['**/*.{js,ts}'],
+    // .mjs added for HW#18's scripts/realtime-demo.mjs — without it, this
+    // block's sourceType:'module' wouldn't apply to that file, and its
+    // top-level `import`s would parse-error under js.configs.recommended's
+    // script-mode default instead.
+    files: ['**/*.{js,mjs,ts}'],
     languageOptions: {
       ecmaVersion: 2022,
       sourceType: 'module',
