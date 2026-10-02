@@ -1288,9 +1288,12 @@ a connected client instantly, over two transports sharing one event bus:
   A client `join`s `orders:<id>`, gated by `OrderOwnershipGuard` (see
   below), then receives an `order.status` event on that room whenever the
   order's status changes.
-- **SSE** — `GET /orders/:id/events`. The same events, as a
+- **SSE** — `GET /orders/:id/events?userId=<owner>`. The same events, as a
   `text/event-stream`, replayable via `Last-Event-ID` from an in-memory
-  per-order buffer.
+  per-order buffer (the 10 000 most recently used orders keep one; ids come
+  from a single clock-seeded counter, so they only grow — across orders,
+  evictions and restarts — and are not contiguous per order).
+  Gated by the same `OrderOwnershipGuard` as `join`.
 
 Both are fed by `OrderEventsService` — a plain RxJS `Subject` + per-order
 buffer with no socket.io or SSE knowledge of its own.
@@ -1305,9 +1308,10 @@ No auth exists yet in this app (auth lands at HW#24 — see the Architecture
 Note above; every order placed through the storefront today is attributed
 to one placeholder customer). The homework requires refusing an anonymous
 or non-owning `join`, so `OrderOwnershipGuard` (`CanActivate`, applied to
-the gateway's `join` handler via `@UseGuards`) does a real check against
-real data: the client states its own `userId` on `join`, and the guard
-loads that order's actual owner from the DB and compares. This is **not**
+the gateway's `join` handler and to the SSE endpoint via `@UseGuards`) does
+a real check against real data: the client states its own `userId` (in the
+`join` payload, or as `?userId=` on the SSE request), and the guard loads
+that order's actual owner from the DB and compares. This is **not**
 authentication — nothing stops a client from claiming any `userId` — but
 it **is** a genuine authorization check, and it's the first guard in this
 codebase: real auth (HW#24) replaces what asserts the identity, not what
@@ -1325,6 +1329,15 @@ socket.emit('join', { orderId: 1, userId: 999999 }, ack =>
 ); // wrong owner -> forbidden
 ```
 
+Over SSE the same refusals are plain HTTP problem responses, thrown before
+any stream header is written:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' http://localhost:3000/orders/1/events                # 401 anonymous
+curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:3000/orders/1/events?userId=999999' # 403 wrong owner
+curl -s -o /dev/null -w '%{http_code}\n' 'http://localhost:3000/orders/999999/events?userId=1' # 404 unknown order
+```
+
 ### Verifying each acceptance criterion
 
 ```bash
@@ -1334,8 +1347,11 @@ npm run seed
 ```
 
 ```bash
+# the owner's id, as the SSE guard expects it in ?userId=
+USER_ID=$(curl -s http://localhost:3000/orders/1 | grep -o '"user_id":[0-9]*' | cut -d: -f2)
+
 # SSE header
-curl -sN --max-time 2 -D - -o /dev/null http://localhost:3000/orders/1/events \
+curl -sN --max-time 2 -D - -o /dev/null "http://localhost:3000/orders/1/events?userId=$USER_ID" \
   | grep -i '^content-type'
 # content-type: text/event-stream
 
@@ -1350,9 +1366,9 @@ for s in pending paid refunded paid; do
   curl -s -X PATCH http://localhost:3000/orders/1/status \
     -H 'content-type: application/json' -d "{\"status\":\"$s\"}" > /dev/null
 done
-curl -sN --max-time 2 -H 'Last-Event-ID: 3' http://localhost:3000/orders/1/events \
+curl -sN --max-time 2 -H 'Last-Event-ID: 3' "http://localhost:3000/orders/1/events?userId=$USER_ID" \
   | grep '^id:' | head -1
-# id: 4  (> 3 — the missed event arrives, nothing already-seen repeats)
+# id: 1790942061005  (any id > 3, clock-seeded — the missed event arrives, nothing already-seen repeats)
 
 # room isolation: main run, then the control run
 node scripts/realtime-demo.mjs;             echo "exit=$?"

@@ -24,6 +24,10 @@ services:
     volumes:
       - .:/app
       - /app/node_modules
+      # nodemon runs `npm run build` as root inside the container; without
+      # this, the compiled output lands in the host's build/ root-owned and
+      # the host's own `npm run build` fails with TS5033 EACCES.
+      - /app/build
 
   infisical-agent:
     environment:

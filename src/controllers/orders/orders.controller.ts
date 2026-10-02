@@ -11,6 +11,7 @@ import {
   Query,
   Req,
   Res,
+  UseGuards,
   UseInterceptors,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
@@ -19,6 +20,7 @@ import { IdempotencyKeyInterceptor } from '../../interceptors/idempotency-key.in
 import { LocationHeaderInterceptor } from '../../interceptors/location-header.interceptor.ts';
 
 import { OrderEventsService } from './order-events.service.ts';
+import { OrderOwnershipGuard } from './order-ownership.guard.ts';
 import { CreateOrderDto, UpdateOrderStatusDto } from './orders.dto.ts';
 import { OrdersService } from './orders.service.ts';
 import { writeSseEvent } from './orders.utils.ts';
@@ -79,20 +81,12 @@ export class OrdersController {
   // response to check it, which is incompatible with a stream designed to
   // never end.
   @Get(':orderId/events')
-  async streamEvents(
+  @UseGuards(OrderOwnershipGuard)
+  streamEvents(
     @Param('orderId', ParseIntPipe) orderId: number,
     @Req() req: Request,
     @Res() res: Response,
-  ): Promise<void> {
-    const order = await this.ordersService.findById(orderId);
-
-    if (!order) {
-      throw new NotFoundException({
-        title: 'Order not found',
-        detail: `Order "${orderId}" not found.`,
-      });
-    }
-
+  ): void {
     res.writeHead(200, {
       'content-type': 'text/event-stream',
       'cache-control': 'no-cache',
