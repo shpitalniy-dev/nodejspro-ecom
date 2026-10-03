@@ -25,3 +25,19 @@ export interface Order {
 }
 
 export type OrderListResponse = ListResponse<Order>;
+
+// The wire contract for order.placed (RabbitMQ, HW #19). Consumers read
+// exactly this shape. orderPlacedSchema in orders.utils.ts is typed against
+// it, so the runtime check and the type cannot drift apart.
+export interface OrderPlacedEvent {
+  eventId: string;
+  type: 'order.placed';
+  occurredAt: string;
+  data: {
+    orderId: number;
+    userId: number;
+    amountCents: number;
+    currency: string;
+    items: OrderItem[];
+  };
+}

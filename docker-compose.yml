@@ -41,6 +41,9 @@ services:
       DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@pgbouncer:6432/ecom}
       DB_USER: ${DB_USER:-app_user}
       DB_PASSWORD_FILE: ${DB_PASSWORD_FILE:-/shared-secrets/db-password}
+      # RabbitMQ (HW #19). Inside the compose network the broker is
+      # `rabbitmq:5672`; host-side scripts get 127.0.0.1 from the vault.
+      BROKER_URL: ${BROKER_URL:-amqp://app:app@rabbitmq:5672}
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
     # depend on it — that decision was about not requiring vault access,
@@ -81,6 +84,8 @@ services:
       # Transitively waits on postgres too — pgbouncer's own depends_on
       # already requires it healthy first.
       pgbouncer:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
     deploy:
       resources:
@@ -269,6 +274,36 @@ services:
           cpus: '0.1'
           memory: 64M
 
+  # RabbitMQ (HW #19). -management because x-death headers are much easier
+  # to read in the web UI. AMQP is 5672; 15672 is the UI only.
+  rabbitmq:
+    image: rabbitmq:4.2-management
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:5672:5672'
+      - '127.0.0.1:15672:15672'
+    environment:
+      RABBITMQ_DEFAULT_USER: app
+      RABBITMQ_DEFAULT_PASS: app
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    healthcheck:
+      # Port open is not ready: the Erlang node can still refuse
+      # basic.publish for a moment after the TCP port accepts connections.
+      test: ['CMD', 'rabbitmq-diagnostics', '-q', 'check_running']
+      interval: 5s
+      timeout: 10s
+      retries: 20
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.1'
+          memory: 256M
+
   # Opt-in only: `docker compose --profile contract up -d --wait broker`.
   # Pact Broker for HW#16 point 6 — stores the consumer/provider contract
   # plus verification results, and answers can-i-deploy. Own tiny Postgres,
@@ -364,6 +399,7 @@ volumes:
   wal_archive:
   basebackup:
   pgdata_pitr:
+  rabbitmq_data:
 
 secrets:
   infisical_client_secret:
