@@ -1,6 +1,10 @@
 import type { QueryRunner } from 'typeorm';
 
 import { FulfillmentService } from '../../src/controllers/fulfillment/fulfillment.service.ts';
+import {
+  getPgErrorCode,
+  isForeignKeyViolation,
+} from '../../src/utils/pg-error.ts';
 
 import { anOrder, aUser } from './testkit/builders.ts';
 import type { TestPg } from './testkit/postgres-container.ts';
@@ -54,8 +58,14 @@ describe('FulfillmentService.applyFulfillment (testcontainers, real postgres:17-
   });
 
   test('an unknown order is a foreign key violation (23503), which the consumer treats as permanent', async () => {
-    await expect(
-      fulfillment.applyFulfillment(queryRunner.manager, 999999),
-    ).rejects.toMatchObject({ driverError: { code: '23503' } });
+    const error = await fulfillment
+      .applyFulfillment(queryRunner.manager, 999999)
+      .then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+
+    expect(isForeignKeyViolation(error)).toBe(true);
+    expect(getPgErrorCode(error)).toBe('23503');
   });
 });

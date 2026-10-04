@@ -1399,15 +1399,212 @@ event a status change on the first instance published. Lecture 18's step 7
 fix — `@socket.io/redis-adapter` — is what closes that gap, and is
 deliberately out of scope for this single-instance HW.
 
+## Async-події через RabbitMQ | HW #19
+
+`POST /orders` now publishes `order.placed`, and a fulfilment worker consumes
+it. The broker keeps the message until a consumer is ready, so an event is not
+lost while the worker is down. Three things are paid for that: a message can
+disappear (ack too early), run twice (ack too late), or stick forever (a poison
+message). Each has its own answer here.
+
+**The correct name for what this gives:** at-least-once delivery plus an
+idempotent effect gives an exactly-once _result_. RabbitMQ does not give
+exactly-once delivery. Idempotency belongs to the operation, and an idempotency
+key is the tool that makes a non-idempotent one safe to repeat.
+
+### Topology
+
+```
+shop.events (topic) ──order.placed──▶ fulfilment.order-placed   (quorum, delivery-limit 5)
+   │                                        │ reject(requeue=false), or delivery limit hit
+   │ alternate-exchange                     ▼
+   ▼                                  shop.dlx (direct) ──order.placed──▶ fulfilment.order-placed.dlq
+shop.unroutable (fanout) ──▶ shop.unroutable (queue)
+```
+
+- The **worker** declares the topology when it starts. The **producer**
+  (`OrderEventPublisher`) declares nothing, so it never needs to know who
+  listens. The demos reset and redeclare it themselves.
+- `npm run rabbitmq:topology` runs the same declaration once as a bootstrap
+  step. Run it before the first API publish: a publish to a missing exchange
+  gets a 404, the channel closes, and the event is lost. The publish still
+  returns 201, because the order is already committed.
+
+### Publish and consume
+
+- **Publisher** (`src/controllers/orders/orders.publisher.ts`): a confirm channel
+  and `waitForConfirms()`. Confirmed means the broker took responsibility, not
+  "delivered" or "processed". The publish runs after `checkout()` commits. A
+  failure is logged and the request still returns 201, since failing it would
+  make the client retry and create a second order. The DB commit and the
+  broker publish share no transaction, so a crash between them loses the event.
+  HW #22's transactional outbox closes that gap.
+- **Contract** (`orderPlacedSchema` in `orders.utils.ts`): `eventId` (stable,
+  also the AMQP `messageId`), `type`, `occurredAt`, and a `data` block with
+  ids, amount and items. It is not an ORM entity spread. The zod schema is
+  typed against the `OrderPlacedEvent` interface, so the check and the type
+  cannot drift apart.
+- **Worker** (`src/workers/fulfillment/fulfillment.worker.ts`): `noAck: false`.
+  It acks only after the effect has committed.
+
+### Prefetch = 20
+
+`prefetch` is the most unacknowledged messages a consumer may hold. The
+default `0` means unlimited, so the first consumer would take the whole queue
+and a second one would sit idle.
+
+The rule: **prefetch × processing time < consumer_timeout** (30 min by default).
+The effect is one indexed `INSERT ... ON CONFLICT DO NOTHING`, measured at
+**0.063 ms** per statement on the conflict path (1000 statements in one
+transaction, rolled back). Even at 100 ms per message, 20 in flight takes 2 s,
+far below 30 min. 20 keeps the pipe full. A prefetch of 1 would wait for every
+ack round-trip, which is the wrong trade for tasks this short. It also stays far
+below the 2000 quorum-queue ceiling.
+
+### Dead letters
+
+The DLX is an ordinary exchange, and the DLQ is an ordinary queue bound to it.
+They are wired with queue arguments (`x-dead-letter-exchange`,
+`x-delivery-limit`). Queue arguments are immutable: changing one on an existing
+queue fails with 406 `PRECONDITION_FAILED`, which is why the demo reset deletes
+and redeclares queues. In production, a **policy** is the better choice. A
+policy can be rewritten without recreating the queue.
+
+A message dies for one of four reasons:
+
+| `x-first-death-reason` | Trigger                                                      |
+| ---------------------- | ------------------------------------------------------------ |
+| `rejected`             | `reject` (or `nack`) with `requeue=false`                    |
+| `expired`              | per-message or queue TTL ran out                             |
+| `maxlen`               | the queue hit its max length                                 |
+| `delivery_limit`       | quorum queue: redelivered more times than `x-delivery-limit` |
+
+Every dead letter carries an `x-death` header with the original queue, reason,
+count and timestamp. `demo:dlq` reads the reason from there.
+
+**`reject` vs `nack`:** both are negative acks. `reject` takes one message, and
+`nack` can also take a batch with `allUpTo`. With `requeue=true`, `reject`
+increments the delivery count, so `x-delivery-limit` can end the loop. The
+course notes say `nack(requeue=true)` does not increment it on RabbitMQ 4.3, so
+the loop would never end. We use `reject` throughout. The broker behaviour is
+the course note's claim, not something this repo proves separately.
+
+The worker's three paths:
+
+- Malformed payload → `reject(requeue=false)` → DLQ, reason `rejected`.
+- Missing order (foreign key violation, `23503`) → `reject(requeue=false)` → DLQ.
+- Anything else (DB down, timeout) → `reject(requeue=true)`, retried until the
+  delivery limit sends it to the DLQ.
+
+**Dead-letter strategy:** we keep the default, so dead letters are at-most-once.
+`dead-letter-strategy: at-least-once` needs `overflow: reject-publish`. Without
+it the broker quietly falls back to at-most-once and logs it only once.
+
+**Unroutable messages:** a routing key with no matching binding would still get
+a positive confirm, so the message would vanish. The `shop.events` exchange has
+`alternate-exchange: shop.unroutable`, which catches those messages with a
+single setting instead of a flag on every publish.
+
+### Duplicate delivery: how it is produced
+
+`demo:duplicate` kills the worker with `SIGKILL` after the effect commits and
+before the ack. That is the window where a real crash produces a duplicate. The
+broker sees the connection drop and redelivers. The second worker gets
+`redelivered=true`, the `INSERT ... ON CONFLICT DO NOTHING` reports a duplicate,
+and it acks.
+
+I did not use `channel.close()`. That is a graceful shutdown: the broker
+requeues the unacked messages, but it isn't what a crash in production looks
+like. A real process death is what the demo shows.
+
+The worker reads one switch for this: `DEMO_CRASH_AFTER_EFFECT=1`. Production
+never sets it.
+
+### Measured runs
+
+Output of three runs (`npm run demo:...`, `SKIP_VAULT=1`):
+
+| Demo             | Output                                                              | Exit |
+| ---------------- | ------------------------------------------------------------------- | ---- |
+| `demo:publish`   | `published=5 delivered=5 effect=5 acked=5 dlq=0 work=0 prefetch=20` | 0    |
+| `demo:dlq`       | `rejected=1 work=0 dlq=1 dlq-reason=rejected effect=0`              | 0    |
+| `demo:duplicate` | `crash=SIGKILL deliveries=2 effect=1 skipped=1 work=0`              | 0    |
+
+Each demo resets its own state, runs the real worker as a child process, and
+checks its own invariant. Each one ran twice in a row with the same result.
+
+### Why at-least-once, not exactly-once
+
+An ack means "I no longer need a redelivery". It does not mean "it arrived".
+Ack too early and a crash loses the message. Ack too late and a crash repeats
+it. There is no third option, so exactly-once _delivery_ does not exist.
+
+What we have is at-least-once delivery plus an idempotent effect. The effect is
+keyed by the business key `order_id`, which is `UNIQUE` in `fulfillments`, so a
+repeat leaves one row. Together they give exactly-once _results_.
+
+Two gaps remain, and both are closed by HW #22:
+
+- Between "marked processed" and "applied the effect" there is a window. Here
+  the effect is its own key, so the window doesn't exist. A separate
+  `processed_messages` table would need one shared COMMIT with the effect.
+- Between "order committed" and "event published" there is a dual write (see
+  above). The transactional outbox is the fix.
+
+### Relation to `tasks` (HW #14)
+
+`checkout()` also inserts a `tasks` row of type `order.fulfillment`, delayed two
+hours so a refund or upsell can merge into the same fulfilment. The RabbitMQ
+worker fulfils immediately, so that merge window no longer applies to
+fulfilment. The `tasks` row stays as demo data for `demo:workers`. Nothing
+consumes it as fulfilment.
+
+### Running the demos
+
+```bash
+npm run demo:publish
+npm run demo:dlq
+npm run demo:duplicate
+```
+
+The demos spawn the worker on the host, and it needs the broker URL, which
+`scripts/with-secrets.sh` provides. The worker runs as `admin` in the demos,
+because they take `DB_URL`, the admin URL, from the environment. That is
+demo-only, and the code says so. Production runs the worker as `app_user`
+through `DataSourceService` and the password file.
+
+Keep the `fulfillment-worker` compose service off while the demos run. It is
+not in the default stack, so a live consumer cannot take the demo's messages.
+
 ## Grading
 
-Fresh clone, clean DB, no vault access:
+Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
+
+### Setup
 
 ```bash
 docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
+export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export SKIP_VAULT=1
 ```
+
+### HW #19 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:publish
+npm run demo:dlq
+npm run demo:duplicate
+```
+
+### Cumulative commands
+
+The course's earlier checks, in the same order. They run in the same shell as the setup.
 
 ```bash
 npm ci
@@ -1423,6 +1620,9 @@ npm run report
 npm run demo:race
 npm run demo:workers
 npm run demo:retry
+npm run demo:publish
+npm run demo:dlq
+npm run demo:duplicate
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

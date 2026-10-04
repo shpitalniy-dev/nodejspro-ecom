@@ -73,7 +73,7 @@ fi
 
 echo "━━━ 4. pg_restore + timing (RTO) ━━━"
 T0=$(now_ms)
-docker compose exec -T restore pg_restore -U admin -d ecom --no-owner < "$DUMP_FILE"
+docker compose exec -T restore pg_restore -U admin -d ecom --no-owner --no-privileges < "$DUMP_FILE"
 RESTORE_MS=$(( $(now_ms) - T0 ))
 
 echo "━━━ 5. Checksum on the restored target ━━━"

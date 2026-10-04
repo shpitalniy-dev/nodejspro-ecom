@@ -13,13 +13,15 @@ import {
 import { parseJson } from '../../utils/parse-json.ts';
 import { isForeignKeyViolation } from '../../utils/pg-error.ts';
 
+import { recordWorkerEvent } from './fulfillment.events.ts';
+
 // prefetch = max unacknowledged messages per consumer. Default 0 means
 // unlimited: the first consumer would take the whole queue.
 // Budget: prefetch × processing time < consumer_timeout (30 min by default).
 // One fulfilment is one indexed INSERT, a few ms, so 20 × ~5 ms ≈ 100 ms.
 // 20 keeps the pipe full (prefetch 1 would wait for every ack round-trip),
 // and it stays far below the 2000 quorum-queue ceiling.
-const PREFETCH = 20;
+export const PREFETCH = 20;
 
 // The fulfilment worker: consumes order.placed for the lifetime of the
 // process. It declares the topology (the consumer owns it, the producer never
@@ -69,34 +71,52 @@ export class FulfillmentWorker
   }
 
   private async handle(channel: Channel, msg: ConsumeMessage): Promise<void> {
+    await recordWorkerEvent('delivered');
+
     const parsed = orderPlacedSchema.safeParse(parseJson(msg.content));
 
     if (!parsed.success) {
-      // A malformed payload can never succeed. requeue=false sends it to
-      // the DLQ with reason `rejected`.
-      channel.reject(msg, false);
-
-      return;
+      // A malformed payload can never succeed.
+      return this.reject(channel, msg, true);
     }
 
     try {
       const manager = await this.dataSourceService.getManager();
-
-      await manager.transaction(tx =>
+      const outcome = await manager.transaction(tx =>
         this.fulfillment.applyFulfillment(tx, parsed.data.data.orderId),
       );
+
+      if (outcome === 'duplicate') {
+        await recordWorkerEvent('skipped');
+      }
+
+      // demo:duplicate only. Dies after the effect has committed and before
+      // the ack: the window where a real crash produces a duplicate delivery.
+      if (process.env.DEMO_CRASH_AFTER_EFFECT === '1') {
+        process.kill(process.pid, 'SIGKILL');
+      }
 
       // ack means "I no longer need a redelivery". Send it only after the
       // effect has committed.
       channel.ack(msg);
+      await recordWorkerEvent('acked');
     } catch (error) {
-      // reject, not nack: only reject counts toward x-delivery-limit.
-      // Permanent failures go to the DLQ now; transient ones are retried
-      // until the limit is reached.
-      // A missing order cannot appear by retrying, so that goes to the DLQ.
+      // A missing order cannot appear by retrying, so it is permanent.
       // Anything else (connection lost, timeout) is transient.
-      channel.reject(msg, !isForeignKeyViolation(error));
+      await this.reject(channel, msg, isForeignKeyViolation(error));
     }
+  }
+
+  // reject, not nack: only reject counts toward x-delivery-limit. Permanent
+  // failures go to the DLQ now (requeue=false). Transient ones are requeued,
+  // and the delivery limit eventually sends them to the DLQ too.
+  private async reject(
+    channel: Channel,
+    msg: ConsumeMessage,
+    permanent: boolean,
+  ): Promise<void> {
+    await recordWorkerEvent(permanent ? 'rejected' : 'requeued');
+    channel.reject(msg, !permanent);
   }
 
   async onModuleDestroy(): Promise<void> {
