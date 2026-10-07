@@ -1,6 +1,7 @@
-import { DatabaseError } from 'pg';
 import type { DataSource, EntityManager } from 'typeorm';
-import { QueryFailedError } from 'typeorm';
+
+import { getPgErrorCode } from '../utils/pg-error.ts';
+import { sleep } from '../utils/sleep.ts';
 
 // Postgres's own instruction to "try the whole transaction again", nothing
 // else: 40001 (serialization_failure) means a REPEATABLE READ/SERIALIZABLE
@@ -10,21 +11,6 @@ import { QueryFailedError } from 'typeorm';
 // violation (e.g. a CHECK constraint) — retrying those would just fail
 // identically forever, or worse, mask the actual problem.
 const RETRYABLE_CODES = new Set(['40001', '40P01']);
-
-// QueryFailedError.driverError is the raw pg error (a DatabaseError, which
-// genuinely has a `.code`) — verified directly against TypeORM's own
-// source (PostgresQueryRunner wraps every failed query in
-// `new QueryFailedError(query, parameters, err)`) rather than assumed.
-function getPgErrorCode(err: unknown): string | undefined {
-  return err instanceof QueryFailedError &&
-    err.driverError instanceof DatabaseError
-    ? err.driverError.code
-    : undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 export interface RetryOutcome<T> {
   result: T;

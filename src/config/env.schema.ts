@@ -21,12 +21,30 @@ export const envSchema = z.object({
   // psql one-liners, a future ORM CLI — see the Configuration table in
   // README.md for where its real value comes from.
   DB_URL: z.string().url(),
+  // RabbitMQ (HW #19). AMQP is 5672 — 15672 is the management web UI and
+  // does not speak AMQP.
+  BROKER_URL: z.url({ protocol: /^amqps?$/ }),
 });
 
 export type Env = z.infer<typeof envSchema>;
 
 export function validate(raw: Record<string, unknown>): Env {
-  const parsed = envSchema.safeParse(raw);
+  return parseWith(envSchema, raw);
+}
+
+// Worker processes serve no HTTP, so PORT is optional for them. Everything
+// else (DB_URL, BROKER_URL) is still required.
+const workerEnvSchema = envSchema.partial({ PORT: true });
+
+export function validateWorker(raw: Record<string, unknown>): Env {
+  return parseWith(workerEnvSchema, raw) as Env;
+}
+
+function parseWith<T extends z.ZodType>(
+  schema: T,
+  raw: Record<string, unknown>,
+): z.infer<T> {
+  const parsed = schema.safeParse(raw);
 
   if (!parsed.success) {
     const lines = parsed.error.issues

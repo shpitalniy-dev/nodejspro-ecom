@@ -32,6 +32,9 @@ export async function startTestApp(
   process.env.DB_PORT = String(container.getPort());
   process.env.DB_NAME = container.getDatabase();
   process.env.DB_USER = container.getUsername();
+  // RabbitMQ (HW #19): satisfies schema validation only. RabbitMqService is
+  // lazy and nothing calls it yet, so e2e never opens a connection.
+  process.env.BROKER_URL = 'amqp://unused:unused@127.0.0.1:5672';
 
   const passwordFile = path.join(os.tmpdir(), `e2e-db-password-${process.pid}`);
 
@@ -39,10 +42,19 @@ export async function startTestApp(
   process.env.DB_PASSWORD_FILE = passwordFile;
 
   const { AppModule } = await import('../../../src/app.module.ts');
+  const { OrderEventPublisher } = await import(
+    '../../../src/controllers/orders/orders.publisher.ts'
+  );
 
+  // e2e never talks to a broker: order creation still goes through the real
+  // service, only the publish is replaced. Real publishing is covered by the
+  // consumer/publisher demos.
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
-  }).compile();
+  })
+    .overrideProvider(OrderEventPublisher)
+    .useValue({ publishOrderPlaced: async () => undefined })
+    .compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>({
     bodyParser: false,

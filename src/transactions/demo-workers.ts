@@ -5,6 +5,7 @@ import { DataSource } from 'typeorm';
 
 import { dataSourceOptions } from '../data-source.ts';
 import { Task } from '../entities/task.entity.ts';
+import { sleep } from '../utils/sleep.ts';
 
 // A worker pool draining a task queue via FOR UPDATE SKIP LOCKED — deliberate
 // mirror-image of checkout.ts's raw-SQL atomic UPDATE: this uses TypeORM's
@@ -22,10 +23,6 @@ const WORKER_COUNT = 4;
 const WORK_MS = 150;
 const WORK_JITTER_MS = 40;
 const RETRY_PAUSE_MS = 20;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 // A perfectly deterministic delay here (plain `sleep(WORK_MS)`, tried
 // first) turned out to badly skew the distribution: with 4 async functions

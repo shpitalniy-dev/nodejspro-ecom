@@ -12,6 +12,11 @@ services:
       - NODE_ENV=development
       - PORT=${PORT:-3000}
       - DB_URL=${DB_URL:-postgresql://admin:admin-bootstrap-password@pgbouncer:6432/ecom}
+      # Repeated here for the same reason as DB_URL above — but NOT keyed on
+      # BROKER_URL itself (see docker-compose.yml's own comment): that name is
+      # also what ## Grading exports for the host-run demos, and leaking that
+      # host-oriented value in here would actually break publishing.
+      - BROKER_URL=${API_BROKER_URL:-amqp://app:app@rabbitmq:5672}
     command: npm run dev
     deploy:
       resources:
@@ -26,7 +31,11 @@ services:
       - /app/node_modules
       # nodemon runs `npm run build` as root inside the container; without
       # this, the compiled output lands in the host's build/ root-owned and
-      # the host's own `npm run build` fails with TS5033 EACCES.
+      # the host's own `npm run build` fails with TS5033 EACCES. This only
+      # works because build/.gitkeep makes build/ exist (host-user-owned)
+      # BEFORE `docker compose up` ever runs — on Linux, Docker creates a
+      # missing mount point itself, as root, which reintroduces the exact
+      # same EACCES through the directory instead of its contents.
       - /app/build
 
   infisical-agent:

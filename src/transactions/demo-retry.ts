@@ -4,6 +4,7 @@ import { DataSource } from 'typeorm';
 
 import { dataSourceOptions } from '../data-source.ts';
 import { User } from '../entities/user.entity.ts';
+import { sleep } from '../utils/sleep.ts';
 
 import { withRetry } from './with-retry.ts';
 
@@ -32,10 +33,6 @@ const BASELINE_BALANCE_CENTS = 100000n; // $1,000
 const DELTA_A = 5000n; // +$50
 const DELTA_B = -3000n; // -$30
 const THINK_MS = 150;
-
-function sleep(ms: number): Promise<void> {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 async function adjustBalance(
   ds: DataSource,

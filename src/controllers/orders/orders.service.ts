@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import type { EntityManager } from 'typeorm';
@@ -22,6 +23,7 @@ import { mustGet } from '../../utils/must-get.ts';
 
 import { OrderEventsService } from './order-events.service.ts';
 import type { CreateOrderItemDto } from './orders.dto.ts';
+import { OrderEventPublisher } from './orders.publisher.ts';
 import type { Order, OrderListResponse } from './orders.types.ts';
 import { ORDER_RELATIONS, toApiOrder } from './orders.utils.ts';
 
@@ -38,9 +40,12 @@ const STOREFRONT_CUSTOMER_BALANCE_CENTS = '100000000';
 
 @Injectable()
 export class OrdersService {
+  private readonly logger = new Logger(OrdersService.name);
+
   constructor(
     private readonly dataSourceService: DataSourceService,
     private readonly orderEvents: OrderEventsService,
+    private readonly orderPublisher: OrderEventPublisher,
   ) {}
 
   async list(limit = 20, cursor?: string): Promise<OrderListResponse> {
@@ -174,6 +179,20 @@ export class OrdersService {
     if (!order) {
       throw new Error(
         `checkout() reported order ${result.orderId} created, but it can't be read back`,
+      );
+    }
+
+    // Best-effort by design: the order is already COMMITTED. Failing the
+    // request would make the client retry and create a second order. The
+    // remaining gap is that the DB commit and the broker publish share no
+    // transaction, so a crash between them loses the event. HW #22's
+    // transactional outbox closes that gap.
+    try {
+      await this.orderPublisher.publishOrderPlaced(order);
+    } catch (error) {
+      this.logger.error(
+        `order.placed for order ${order.id} was not published`,
+        error instanceof Error ? error.stack : String(error),
       );
     }
 
