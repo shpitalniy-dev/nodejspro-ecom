@@ -1573,9 +1573,6 @@ because they take `DB_URL`, the admin URL, from the environment. That is
 demo-only, and the code says so. Production runs the worker as `app_user`
 through `DataSourceService` and the password file.
 
-Keep the `fulfillment-worker` compose service off while the demos run. It is
-not in the default stack, so a live consumer cannot take the demo's messages.
-
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.

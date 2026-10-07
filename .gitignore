@@ -20,8 +20,11 @@ infisical/secrets
 # Turbo (leftover from monorepo tooling, harmless if unused)
 .turbo
 
-# Build outputs
-build
+# Build outputs. build/ itself is tracked via build/.gitkeep (not ignored),
+# so it exists host-user-owned before `docker compose up` ever runs — see
+# docker-compose.override.yml's own comment on the /app/build volume.
+build/*
+!build/.gitkeep
 dist
 .test-build
 
