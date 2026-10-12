@@ -4,6 +4,7 @@ import { ConfigModule } from '@nestjs/config';
 import { validateWorker } from '../../config/env.schema.ts';
 import { FulfillmentService } from '../../controllers/fulfillment/fulfillment.service.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
+import { InboxService } from '../../services/inbox.service.ts';
 import { RabbitMqService } from '../../services/rabbitmq/rabbitmq.service.ts';
 
 import { FulfillmentWorker } from './fulfillment.worker.ts';
@@ -21,6 +22,7 @@ import { FulfillmentWorker } from './fulfillment.worker.ts';
   providers: [
     DataSourceService,
     RabbitMqService,
+    InboxService,
     FulfillmentService,
     FulfillmentWorker,
   ],

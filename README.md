@@ -1573,6 +1573,162 @@ because they take `DB_URL`, the admin URL, from the environment. That is
 demo-only, and the code says so. Production runs the worker as `app_user`
 through `DataSourceService` and the password file.
 
+## Outbox та ідемпотентність | HW #22
+
+HW #19 left one gap: `checkout()` commits the
+order, then `OrdersService.create()` calls `OrderEventPublisher` in a
+**separate** step. A crash between those two — or a rollback after the
+publish already went out — either loses the event or leaves an orphan. This
+HW closes that gap with a transactional outbox, and pays the bill that comes
+with it: idempotency, at two levels on the consumer and one more at the API
+edge.
+
+### Schema
+
+One migration
+(`src/migrations/1789300000000-AddOutboxAndProcessedMessages.ts`), two
+tables:
+
+- **`outbox`** — `id uuid`, `aggregate_type`, `aggregate_id`, `type`,
+  `payload jsonb`, `created_at`, `published_at` (`NULL` = not yet delivered),
+  `attempts`. `aggregate_type`/`aggregate_id` identify which business entity
+  the event is about (`'Order'` / the order's id) — the canonical Debezium
+  Outbox Event Router field names, and also what the demos use to scope
+  their queries to one order without a FK to `orders`. Partial index
+  `outbox_unpublished_idx ON outbox (created_at, id) WHERE published_at IS
+NULL` — the one the relay's claim query actually uses; cheap to maintain
+  as the table grows, because an unpublished row is the rare, short-lived
+  case.
+- **`processed_messages`** (the inbox) — `message_id`, `consumer`,
+  `processed_at`, unique on `(message_id, consumer)`.
+
+### One COMMIT
+
+`checkout()` (`src/transactions/checkout.ts`) now writes the `order.placed`
+event to `outbox` in the **same transaction** as `orders`/`order_items`/
+`tasks`. No `publish()` call anywhere near it — the broker can't roll back,
+which is the whole reason the outbox row exists instead. `OrdersService`
+no longer publishes after the fact; a separate relay process is the only
+thing that ever delivers an outbox row.
+
+The event itself is built by `toOrderPlacedEvent()`
+(`orders.utils.ts`) — an explicit, deliberately designed contract, not an
+ORM entity spread. If `orders` gains or renames a column tomorrow, nothing
+here notices unless this function is the thing that changes.
+
+### Relay — `src/workers/relay`
+
+```sql
+SELECT id, payload FROM outbox
+ WHERE published_at IS NULL
+ ORDER BY created_at, id
+ FOR UPDATE SKIP LOCKED
+ LIMIT $1;
+```
+
+`RelayService.relayBatch()` claims a batch this way, publishes each row,
+then `UPDATE`s `published_at` — select, publish and mark all inside one
+transaction. **`SKIP LOCKED`, not a bare `FOR UPDATE`:** a bare `FOR UPDATE`
+gives the same zero-duplicates guarantee, but a second relay instance just
+blocks on the first row's lock — every concurrent relay serializes onto one
+at a time. `SKIP LOCKED` gets the same guarantee (two relays can never claim
+the same row) without that cost: a second relay just moves on to the next
+unlocked row. `RelayWorker` wraps this in a continuous poll loop, the
+production artifact; the demos below call `relayBatch()` directly instead,
+for exact control over how many rows one call claims.
+
+**Why `publish()` then `UPDATE`, never the other order round:** marking a
+row published and _then_ publishing would turn a broker outage into a lost
+event — the row is marked delivered whether or not it actually went out,
+and nothing ever retries it. Publishing first and marking second can only
+ever produce a _duplicate_ (the row gets republished on the next pass if the
+mark never lands) — never a loss, because the row stays claimable until the
+mark actually commits. A duplicate is something the consumer can absorb. A
+loss cannot be un-lost. That asymmetry is the whole reason for the order,
+not a style preference.
+
+**A publish error does not mean the message wasn't delivered** — the
+broker's own confirmation could be what got lost, not the message.
+Catching the error and rolling back the batch "to be safe" would be exactly
+as wrong as it was in HW #19's dual-write case: the event may already be in
+the queue. This is also why consumer-side dedup is mandatory regardless of
+how careful the relay is.
+
+### Idempotent consumer — two levels
+
+`FulfillmentService.applyFulfillment()` (`src/controllers/fulfillment/`),
+both inside the one transaction `fulfillment.worker.ts` already wraps the
+call in:
+
+1. **Inbox (level 2):** `INSERT INTO processed_messages (message_id,
+consumer) VALUES ($1, 'fulfillment') ON CONFLICT (message_id, consumer)
+DO NOTHING RETURNING message_id`. A redelivery of the SAME message never
+   even reaches the effect. Marking the message processed and applying the
+   effect share this one transaction on purpose — two separate transactions
+   would be dual write again, just moved onto the consumer.
+2. **Natural key (level 1):** `INSERT INTO fulfillments (order_id) ...
+ON CONFLICT (order_id) DO NOTHING`, unchanged from HW #19. It backstops
+   the inbox: two _different_ messages that happen to describe the same
+   order (a bug upstream, a replay under a new eventId) still leave one row,
+   because `order_id` is `UNIQUE` regardless of which message asked for it.
+
+### API-edge idempotency (level 3)
+
+`Idempotency-Key` from HW #9 (`IdempotencyKeyInterceptor` +
+`IdempotencyStore`) was already a real server-side mechanism — claim/
+in-flight/done/replay, proven by `test/e2e/orders.e2e.test.ts` — not just a
+header echoed back. No code changed here for HW #22; `demo:outbox` below
+exercises it through two real HTTP requests against the real app, not a
+unit-level description.
+
+### `demo:crash-relay`'s crash: an exception, not `kill -9`
+
+The spec allows either: a real `kill -9` of a child process (what HW #19's
+`demo:duplicate` already does, at a different crash point), or an exception/
+rollback at the exact point. `RelayService` throws `DemoRelayCrashError`
+right after `publish()` resolves and right before the `UPDATE`
+(`DEMO_CRASH_AFTER_PUBLISH=1`), inside the transaction wrapping the batch —
+the transaction rolls back exactly as if the process had died there. Chosen
+over a real signal kill because it's deterministic for a cold grading run:
+no process-signal timing to race, same outcome either way (the broker
+already has the message, the DB never recorded that it did).
+
+### Outbox growth
+
+An unpublished row is rare and short-lived (the partial index is sized for
+that), but published rows accumulate forever otherwise. The minimum: a
+periodic job doing `DELETE FROM outbox WHERE published_at < now() - interval
+'7 days'` (or a partition-and-drop strategy once volume justifies it) — not
+implemented here (out of this HW's scope), but it's the next thing to add
+before this table sees real production traffic, same discipline
+`AddOrderItemsIndexes` already applied to `order_items`.
+
+### Measured runs
+
+Output of three runs against a fresh `docker compose down -v` /
+`docker compose up -d --wait` instance (`npm run demo:...`, `SKIP_VAULT=1`),
+each run twice in a row with the same result:
+
+| Demo               | Output                                                                       | Exit |
+| ------------------ | ---------------------------------------------------------------------------- | ---- |
+| `demo:outbox`      | `requests=2 orders=1 outbox=1 published=1 deliveries=1 effect=1 processed=1` | 0    |
+| `demo:crash-write` | `write-failed=1 orders=0 outbox=0 published=0 deliveries=0 effect=0`         | 0    |
+| `demo:crash-relay` | `published=2 deliveries=2 applied=1 effect=1 processed=1`                    | 0    |
+
+`demo:crash-relay`'s numbers are the whole point made concrete: the event
+was delivered twice (`deliveries=2`), but the effect landed once
+(`applied=1`, cross-checked independently by counting `fulfillments` rows:
+`effect=1`, and by counting `processed_messages` rows for that event's id:
+`processed=1`) — at-least-once delivery, exactly-once result.
+
+### Running the demos
+
+```bash
+npm run demo:outbox
+npm run demo:crash-write
+npm run demo:crash-relay
+```
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -1599,6 +1755,19 @@ npm run demo:dlq
 npm run demo:duplicate
 ```
 
+### HW #22 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:outbox
+npm run demo:crash-write
+npm run demo:crash-relay
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -1620,6 +1789,9 @@ npm run demo:retry
 npm run demo:publish
 npm run demo:dlq
 npm run demo:duplicate
+npm run demo:outbox
+npm run demo:crash-write
+npm run demo:crash-relay
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh
