@@ -1,6 +1,7 @@
 import type { QueryRunner } from 'typeorm';
 
 import { FulfillmentService } from '../../src/controllers/fulfillment/fulfillment.service.ts';
+import { InboxService } from '../../src/services/inbox.service.ts';
 import {
   getPgErrorCode,
   isForeignKeyViolation,
@@ -18,7 +19,7 @@ describe('FulfillmentService.applyFulfillment (testcontainers, real postgres:17-
   let pg: TestPg;
   let queryRunner: QueryRunner;
   let orderId: number;
-  const fulfillment = new FulfillmentService();
+  const fulfillment = new FulfillmentService(new InboxService());
 
   beforeAll(async () => {
     pg = await startTestPostgres();
@@ -41,12 +42,17 @@ describe('FulfillmentService.applyFulfillment (testcontainers, real postgres:17-
     await rollbackTx(queryRunner);
   });
 
+  // Same messageId on both calls — a redelivery is literally the same
+  // message, so this is the faithful simulation of it. It also exercises
+  // the inbox (level 2) dedup first: processed_messages already has a row
+  // for 'evt-1' by the second call, so that call never even reaches the
+  // fulfillments insert — the SQL cross-check below still pins the result.
   test('first delivery applies the effect, a redelivery is a duplicate and adds no row', async () => {
     await expect(
-      fulfillment.applyFulfillment(queryRunner.manager, orderId),
+      fulfillment.applyFulfillment(queryRunner.manager, orderId, 'evt-1'),
     ).resolves.toBe('applied');
     await expect(
-      fulfillment.applyFulfillment(queryRunner.manager, orderId),
+      fulfillment.applyFulfillment(queryRunner.manager, orderId, 'evt-1'),
     ).resolves.toBe('duplicate');
 
     const [{ count }] = await queryRunner.manager.query(
@@ -59,7 +65,7 @@ describe('FulfillmentService.applyFulfillment (testcontainers, real postgres:17-
 
   test('an unknown order is a foreign key violation (23503), which the consumer treats as permanent', async () => {
     const error = await fulfillment
-      .applyFulfillment(queryRunner.manager, 999999)
+      .applyFulfillment(queryRunner.manager, 999999, 'evt-2')
       .then(
         () => undefined,
         (e: unknown) => e,

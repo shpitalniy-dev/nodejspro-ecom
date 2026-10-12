@@ -2,12 +2,9 @@ import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import type { ConfirmChannel } from 'amqplib';
 
 import { RabbitMqService } from '../../services/rabbitmq/rabbitmq.service.ts';
-import {
-  EXCHANGE,
-  ROUTING_KEY,
-} from '../../services/rabbitmq/rabbitmq.topology.ts';
+import { EXCHANGE } from '../../services/rabbitmq/rabbitmq.topology.ts';
 
-import type { Order } from './orders.types.ts';
+import type { Order, OrderPlacedEvent } from './orders.types.ts';
 import { buildOrderPlaced } from './orders.utils.ts';
 
 // Producer side. Declares nothing: the consumer owns topology, so the
@@ -20,13 +17,14 @@ export class OrderEventPublisher implements OnModuleDestroy {
 
   constructor(private readonly broker: RabbitMqService) {}
 
-  // Resolves only after the broker has taken responsibility for the message.
-  // "Confirmed" does not mean delivered or processed.
   async publishOrderPlaced(order: Order): Promise<void> {
-    const event = buildOrderPlaced(order);
+    await this.publish(buildOrderPlaced(order));
+  }
+
+  async publish(event: OrderPlacedEvent): Promise<void> {
     const channel = await this.getChannel();
 
-    channel.publish(EXCHANGE, ROUTING_KEY, Buffer.from(JSON.stringify(event)), {
+    channel.publish(EXCHANGE, event.type, Buffer.from(JSON.stringify(event)), {
       persistent: true,
       contentType: 'application/json',
       messageId: event.eventId,

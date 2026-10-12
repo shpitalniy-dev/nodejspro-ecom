@@ -83,7 +83,11 @@ export class FulfillmentWorker
     try {
       const manager = await this.dataSourceService.getManager();
       const outcome = await manager.transaction(tx =>
-        this.fulfillment.applyFulfillment(tx, parsed.data.data.orderId),
+        this.fulfillment.applyFulfillment(
+          tx,
+          parsed.data.data.orderId,
+          parsed.data.eventId,
+        ),
       );
 
       if (outcome === 'duplicate') {

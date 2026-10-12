@@ -41,3 +41,12 @@ export interface OrderPlacedEvent {
     items: OrderItem[];
   };
 }
+
+export interface OrderPlacedSource {
+  orderId: number;
+  userId: number;
+  amountCents: bigint | number | string;
+  currency: string;
+  occurredAt: Date;
+  items: OrderItem[];
+}

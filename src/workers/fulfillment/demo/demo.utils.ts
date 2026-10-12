@@ -32,8 +32,11 @@ import type { WorkerEvent } from '../fulfillment.events.ts';
 // demo resets its own state, starts the real worker, and checks its own
 // invariant.
 
-const DEMO_BUYER_EMAIL = 'demo-buyer@seed.example';
-const DEMO_PRODUCT_KEY = 'sku-concurrency-demo';
+// Exported too — HW #22's relay demos (src/workers/relay/demo) reuse this
+// same buyer/product rather than seeding a second pair, via
+// resetDemoFixtures below.
+export const DEMO_BUYER_EMAIL = 'demo-buyer@seed.example';
+export const DEMO_PRODUCT_KEY = 'sku-concurrency-demo';
 const BUYER_BALANCE_CENTS = '100000';
 
 // Demo reset: queues and exchanges are deleted and redeclared. Arguments can't

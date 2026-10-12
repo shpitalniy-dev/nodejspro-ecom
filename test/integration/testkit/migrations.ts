@@ -1,6 +1,7 @@
 import { InitialSchema1789069491002 } from '../../../src/migrations/1789069491002-InitialSchema.ts';
 import { AddBalanceAndTasks1789156780786 } from '../../../src/migrations/1789156780786-AddBalanceAndTasks.ts';
 import { AddOrderItemsIndexes1789231614310 } from '../../../src/migrations/1789231614310-AddOrderItemsIndexes.ts';
+import { AddOutboxAndProcessedMessages1789300000000 } from '../../../src/migrations/1789300000000-AddOutboxAndProcessedMessages.ts';
 
 // Chronological list of migration classes, in run order — used by the
 // integration/E2E test DataSource (postgres-container.ts) instead of the
@@ -18,4 +19,5 @@ export const migrations = [
   InitialSchema1789069491002,
   AddBalanceAndTasks1789156780786,
   AddOrderItemsIndexes1789231614310,
+  AddOutboxAndProcessedMessages1789300000000,
 ];

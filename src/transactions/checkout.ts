@@ -1,8 +1,10 @@
 import type { DataSource } from 'typeorm';
 import { In } from 'typeorm';
 
+import { toOrderPlacedEvent } from '../controllers/orders/orders.utils.ts';
 import { Order } from '../entities/order.entity.ts';
 import { OrderItem } from '../entities/order-item.entity.ts';
+import { Outbox } from '../entities/outbox.entity.ts';
 import { Product } from '../entities/product.entity.ts';
 import { Task } from '../entities/task.entity.ts';
 import { createInventoryRepository } from '../repositories/inventory.repository.ts';
@@ -36,6 +38,15 @@ export class UnknownProductError extends Error {
   constructor(productKey: string) {
     super(`unknown product: ${productKey}`);
     this.name = 'UnknownProductError';
+  }
+}
+
+export class DemoWriteFailureError extends Error {
+  constructor(public readonly attemptedOrderId: number) {
+    super(
+      `demo:crash-write forced failure after the outbox insert for order ${attemptedOrderId}`,
+    );
+    this.name = 'DemoWriteFailureError';
   }
 }
 
@@ -215,6 +226,35 @@ export async function checkout(
         availableAt: () => `now() + ${FULFILLMENT_DELAY_INTERVAL}`,
       })
       .execute();
+
+    // Transactional outbox (HW #22): the order row and its event commit
+    // together, in this one transaction
+    const event = toOrderPlacedEvent({
+      orderId: order.id,
+      userId,
+      amountCents: totalCents,
+      currency: rows[0].currency,
+      occurredAt: order.createdAt,
+      items: rows.map(row => ({
+        productId: row.product_id,
+        quantity: row.quantity,
+      })),
+    });
+
+    await manager.getRepository(Outbox).save({
+      aggregateType: 'Order',
+      aggregateId: String(order.id),
+      type: event.type,
+      payload: event as unknown as Record<string, unknown>,
+    });
+
+    // demo:crash-write only — forces the whole transaction to roll back
+    // *after* the outbox row above would have been written, proving both
+    // rows share one COMMIT: neither the order nor the outbox row survives.
+    // Production never sets this.
+    if (process.env.DEMO_FAIL_AFTER_OUTBOX === '1') {
+      throw new DemoWriteFailureError(order.id);
+    }
 
     return { orderId: order.id, orderUuid: order.uuid };
   });

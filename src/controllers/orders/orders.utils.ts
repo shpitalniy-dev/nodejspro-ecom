@@ -6,7 +6,11 @@ import { Order as OrderEntity } from '../../entities/order.entity.ts';
 import type { Currency } from '../../types/index.ts';
 
 import { OrderStatusEvent } from './order-events.service.ts';
-import type { Order, OrderPlacedEvent } from './orders.types.ts';
+import type {
+  Order,
+  OrderPlacedEvent,
+  OrderPlacedSource,
+} from './orders.types.ts';
 
 // user: true added for HW#18 — the WS gateway's ownership check and
 // scripts/realtime-demo.mjs both need user_id on every Order response now
@@ -69,18 +73,31 @@ export const orderPlacedSchema: z.ZodType<OrderPlacedEvent> = z.object({
   }),
 });
 
-// Only called from checkout's success path, so every event is a paid order.
-export function buildOrderPlaced(order: Order): OrderPlacedEvent {
+export function toOrderPlacedEvent(
+  source: OrderPlacedSource,
+): OrderPlacedEvent {
   return {
     eventId: randomUUID(),
     type: 'order.placed',
-    occurredAt: order.created_at,
+    occurredAt: source.occurredAt.toISOString(),
     data: {
-      orderId: order.id,
-      userId: order.user_id,
-      amountCents: order.total_cents,
-      currency: order.currency,
-      items: order.items,
+      orderId: source.orderId,
+      userId: source.userId,
+      amountCents: Number(source.amountCents),
+      currency: source.currency,
+      items: source.items,
     },
   };
+}
+
+// Only called from checkout's success path, so every event is a paid order.
+export function buildOrderPlaced(order: Order): OrderPlacedEvent {
+  return toOrderPlacedEvent({
+    orderId: order.id,
+    userId: order.user_id,
+    amountCents: order.total_cents,
+    currency: order.currency,
+    occurredAt: new Date(order.created_at),
+    items: order.items,
+  });
 }
