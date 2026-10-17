@@ -4,7 +4,10 @@ import { Queue } from 'bullmq';
 
 import type { WebhookWorkerEnv } from '../../config/env.schema.ts';
 import { validateWorker } from '../../config/env.schema.ts';
-import { BullMqPublisher } from '../../services/bullmq/bullmq-publisher.service.ts';
+import {
+  BullMqPublisher,
+  QUEUE_REDIS_CONNECTION,
+} from '../../services/bullmq/bullmq-publisher.service.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
 import { RabbitMqService } from '../../services/rabbitmq/rabbitmq.service.ts';
 import { RabbitMqPublisher } from '../../services/rabbitmq/rabbitmq-publisher.service.ts';
@@ -35,15 +38,22 @@ import { RelayWorker } from './relay.worker.ts';
     {
       // The PRODUCER connection — never shared with WebhookConsumerWorker's
       // own connection, per BullMQ's own requirement (see redis.factory.ts).
-      provide: Queue,
+      // Provided under its own token (not just handed to Queue inline) so
+      // BullMqPublisher can close it itself on shutdown — BullMQ's own
+      // backend treats a caller-supplied client on a non-blocking construct
+      // like Queue as "shared" and never closes it on queue.close().
+      provide: QUEUE_REDIS_CONNECTION,
       useFactory: (config: ConfigService<WebhookWorkerEnv, true>) =>
-        new Queue(QUEUE_NAME, {
-          connection: createRedisClient(
-            config.get('REDIS_QUEUE_URL', { infer: true }),
-            { maxRetriesPerRequest: null },
-          ),
+        createRedisClient(config.get('REDIS_QUEUE_URL', { infer: true }), {
+          maxRetriesPerRequest: null,
         }),
       inject: [ConfigService],
+    },
+    {
+      provide: Queue,
+      useFactory: (connection: ReturnType<typeof createRedisClient>) =>
+        new Queue(QUEUE_NAME, { connection }),
+      inject: [QUEUE_REDIS_CONNECTION],
     },
     BullMqPublisher,
     RelayService,

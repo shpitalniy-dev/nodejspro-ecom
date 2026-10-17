@@ -3,6 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Job } from 'bullmq';
 import { Worker } from 'bullmq';
+import type { Redis } from 'ioredis';
 
 import type { WebhookWorkerEnv } from '../../config/env.schema.ts';
 import { orderStatusChangedSchema } from '../../controllers/orders/orders.utils.ts';
@@ -22,6 +23,11 @@ export class WebhookConsumerWorker
   implements OnApplicationBootstrap, OnModuleDestroy
 {
   private worker: Worker | null = null;
+  // BullMQ marks a caller-supplied connection on a Worker's main (non-
+  // blocking) side as "shared" and never closes it itself — only the
+  // dedicated blocking connection it duplicates from this one gets closed
+  // by worker.close(). This reference lets onModuleDestroy close it too.
+  private connection: Redis | null = null;
 
   constructor(
     private readonly config: ConfigService<WebhookWorkerEnv, true>,
@@ -34,6 +40,8 @@ export class WebhookConsumerWorker
       this.config.get('REDIS_QUEUE_URL', { infer: true }),
       { maxRetriesPerRequest: null },
     );
+
+    this.connection = consumerConnection;
 
     this.worker = new Worker(
       QUEUE_NAME,
@@ -96,5 +104,6 @@ export class WebhookConsumerWorker
 
   async onModuleDestroy(): Promise<void> {
     await this.worker?.close().catch(() => undefined);
+    await this.connection?.quit().catch(() => undefined);
   }
 }

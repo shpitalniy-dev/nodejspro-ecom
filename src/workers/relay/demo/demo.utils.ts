@@ -13,7 +13,10 @@ import { IsNull } from 'typeorm';
 import type { WebhookWorkerEnv } from '../../../config/env.schema.ts';
 import { validateWorker } from '../../../config/env.schema.ts';
 import { Outbox } from '../../../entities/outbox.entity.ts';
-import { BullMqPublisher } from '../../../services/bullmq/bullmq-publisher.service.ts';
+import {
+  BullMqPublisher,
+  QUEUE_REDIS_CONNECTION,
+} from '../../../services/bullmq/bullmq-publisher.service.ts';
 import { RabbitMqService } from '../../../services/rabbitmq/rabbitmq.service.ts';
 import { RabbitMqPublisher } from '../../../services/rabbitmq/rabbitmq-publisher.service.ts';
 import { createRedisClient } from '../../../services/redis/redis.factory.ts';
@@ -76,16 +79,21 @@ export async function resetStaleOutboxRows(
     {
       // Same producer-connection shape RelayModule itself uses — see
       // relay.module.ts's own comment on why this can't share a socket
-      // with WebhookConsumerWorker's Worker connection.
-      provide: Queue,
+      // with WebhookConsumerWorker's Worker connection, and why the
+      // connection needs its own token rather than being handed to Queue
+      // inline (BullMQ never closes a caller-supplied connection itself).
+      provide: QUEUE_REDIS_CONNECTION,
       useFactory: (config: ConfigService<WebhookWorkerEnv, true>) =>
-        new Queue(QUEUE_NAME, {
-          connection: createRedisClient(
-            config.get('REDIS_QUEUE_URL', { infer: true }),
-            { maxRetriesPerRequest: null },
-          ),
+        createRedisClient(config.get('REDIS_QUEUE_URL', { infer: true }), {
+          maxRetriesPerRequest: null,
         }),
       inject: [ConfigService],
+    },
+    {
+      provide: Queue,
+      useFactory: (connection: ReturnType<typeof createRedisClient>) =>
+        new Queue(QUEUE_NAME, { connection }),
+      inject: [QUEUE_REDIS_CONNECTION],
     },
     BullMqPublisher,
     RelayService,

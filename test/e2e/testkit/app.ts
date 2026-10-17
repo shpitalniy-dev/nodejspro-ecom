@@ -35,6 +35,8 @@ export async function startTestApp(
   // RabbitMQ (HW #19): satisfies schema validation only. RabbitMqService is
   // lazy and nothing calls it yet, so e2e never opens a connection.
   process.env.BROKER_URL = 'amqp://unused:unused@127.0.0.1:5672';
+  process.env.REDIS_URL = 'redis://redis-cache:6379';
+  process.env.REDIS_QUEUE_URL = 'redis://redis-queue:6380';
 
   const passwordFile = path.join(os.tmpdir(), `e2e-db-password-${process.pid}`);
 

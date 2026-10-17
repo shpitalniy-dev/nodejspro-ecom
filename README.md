@@ -1731,12 +1731,13 @@ npm run demo:crash-relay
 
 ## Redis: cache, sessions, rate limiting, and queue | HW #23
 
-Two independent uses of the same Redis: a read too expensive to repeat on
-every request (cache), and state that has to survive a process restart
-(session). Both rest on the same principle from the lecture — a cache is a
-deliberate agreement to serve stale data, and TTL/jitter/the lock are just
-technique for managing that staleness. Rate limiting and the queue (BullMQ)
-are next; this covers what's built so far.
+Four independent uses of the same Redis deployment: a read too expensive to
+repeat on every request (cache), state that has to survive a process
+restart (session), a limit shared across pods (rate limiting), and work
+too slow for an HTTP request (queue). The cache and session halves rest on
+the same principle from the lecture — a cache is a deliberate agreement to
+serve stale data, and TTL/jitter/the lock are just technique for managing
+that staleness.
 
 ### Cache-aside and the single-flight lock
 
@@ -1808,19 +1809,41 @@ and `Worker` (consumer, in `WebhookConsumerModule`) always use two
 independent Redis connections, since a `Worker`'s blocking commands would
 stall `Queue.add()` calls on a shared one.
 
+### What's deliberately left out
+
+- **`demo:queue` is not wired to the real webhook path.** It's a standalone
+  demonstration of BullMQ's own mechanics (retry/backoff, `jobId` dedup, the
+  job scheduler) against a throwaway `demo-queue` queue — not a client of
+  `WebhookConsumerWorker`. It satisfies HW #23 point 5 on its own; the real
+  `order.status_changed` → BullMQ → webhook path (above) is a separate,
+  independently-exercised flow, by design, not an oversight.
+- **A webhook over BullMQ isn't necessarily the best fit for a slow,
+  arbitrary HTTP call.** The simpler, more common pattern for outbox-based
+  webhook delivery is the relay POSTing directly, with retry/backoff
+  driven by the outbox row's own `attempts` column — no second queue
+  in between. BullMQ was kept here because wiring it into a real feature
+  was the point of this exercise; revisiting that design is out of scope
+  for the time available on this HW.
+- **No real session/auth exists yet.** `demo:session` proves the Redis
+  mechanics (rolling TTL, survives a process restart) in isolation — it's
+  not connected to the running app, and there is no session-backed request
+  path to test it against. Real user sessions, and what they do or don't
+  share with a JWT, land in HW #24 (`OrderOwnershipGuard`'s own comment
+  already defers auth there).
+
 ### Measured runs
 
-_Not yet run on a live stack — the numbers below will land after the first
-real `docker compose up -d --wait` + `npm run demo:cache` +
-`npm run demo:session` + `npm run demo:ratelimit` + `npm run demo:queue`;
-this is the output contract, not measured numbers, for now._
+One real run against the compose stack; `ttl-distinct` and `scheduled-runs`
+vary run to run by construction (jittered TTLs, wall-clock scheduler ticks)
+— the acceptance thresholds (`>= 5`, `>= 2`) are what's actually checked,
+not these exact values.
 
-| Demo             | Output                                                                                           | Exit |
-| ---------------- | ------------------------------------------------------------------------------------------------ | ---- |
-| `demo:cache`     | `cache-lru=1 cache-maxmemory=1 warmed=? ttl-distinct=? concurrent=20 db-calls=1 db-calls-warm=0` | ?    |
-| `demo:session`   | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                 | ?    |
-| `demo:ratelimit` | `instances=2 limit=5 requests=16 allowed=5 blocked=11 status=429 retry-after=1`                  | ?    |
-| `demo:queue`     | `queue-noeviction=1 attempts=3 completed=1 added=2 queued=1 schedulers=1 scheduled-runs=?`       | ?    |
+| Demo             | Output                                                                                             | Exit |
+| ---------------- | -------------------------------------------------------------------------------------------------- | ---- |
+| `demo:cache`     | `cache-lru=1 cache-maxmemory=1 warmed=50 ttl-distinct=35 concurrent=20 db-calls=1 db-calls-warm=0` | 0    |
+| `demo:session`   | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                   | 0    |
+| `demo:ratelimit` | `instances=2 limit=5 requests=16 allowed=5 blocked=11 status=429 retry-after=1`                    | 0    |
+| `demo:queue`     | `queue-noeviction=1 attempts=3 completed=1 added=2 queued=1 schedulers=1 scheduled-runs=8`         | 0    |
 
 ### Running the demos
 
