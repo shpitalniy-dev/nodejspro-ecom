@@ -13,10 +13,12 @@ import { ProductsController } from './controllers/products/products.controller.t
 import { ProductsService } from './controllers/products/products.service.ts';
 import { IdempotencyKeyInterceptor } from './interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from './interceptors/location-header.interceptor.ts';
+import { CacheAsideService } from './services/cache/cache-aside.service.ts';
 import { DataSourceService } from './services/data-source.service.ts';
 import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
 import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
+import { RedisCacheService } from './services/redis/redis-cache.service.ts';
 
 @Module({
   controllers: [HealthController, ProductsController, OrdersController],
@@ -33,6 +35,13 @@ import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
     DataSourceService,
     RabbitMqService,
     OrderEventPublisher,
+    RedisCacheService,
+    {
+      provide: CacheAsideService,
+      useFactory: async (redis: RedisCacheService) =>
+        new CacheAsideService(await redis.getClient()),
+      inject: [RedisCacheService],
+    },
   ],
   imports: [
     ConfigModule.forRoot({

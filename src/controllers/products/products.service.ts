@@ -1,15 +1,23 @@
 import { Injectable } from '@nestjs/common';
 
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
+import { CacheAsideService } from '../../services/cache/cache-aside.service.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
 import { decodeCursor, encodeCursor } from '../../utils/cursor.ts';
 
 import type { Product, ProductListResponse } from './products.types.ts';
-import { toApiProduct } from './products.utils.ts';
+import {
+  jitteredProductTtlSeconds,
+  productCacheKey,
+  toApiProduct,
+} from './products.utils.ts';
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly dataSourceService: DataSourceService) {}
+  constructor(
+    private readonly dataSourceService: DataSourceService,
+    private readonly cacheAside: CacheAsideService,
+  ) {}
 
   async list(limit = 20, cursor?: string): Promise<ProductListResponse> {
     const manager = await this.dataSourceService.getManager();
@@ -34,11 +42,21 @@ export class ProductsService {
   }
 
   async findById(id: number): Promise<Product | undefined> {
+    const product = await this.cacheAside.getOrLoad<Product | null>(
+      productCacheKey(id),
+      { ttlSeconds: jitteredProductTtlSeconds },
+      () => this.loadProductFromDb(id),
+    );
+
+    return product ?? undefined;
+  }
+
+  private async loadProductFromDb(id: number): Promise<Product | null> {
     const manager = await this.dataSourceService.getManager();
     const product = await manager
       .getRepository(ProductEntity)
       .findOneBy({ id });
 
-    return product ? toApiProduct(product) : undefined;
+    return product ? toApiProduct(product) : null;
   }
 }

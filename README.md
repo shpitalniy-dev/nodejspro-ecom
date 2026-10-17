@@ -1739,6 +1739,7 @@ Fresh clone, clean DB, no vault access. Run the setup first, then the section yo
 docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
+export REDIS_URL=redis://127.0.0.1:6379
 export SKIP_VAULT=1
 ```
 
@@ -1768,6 +1769,17 @@ npm run demo:crash-write
 npm run demo:crash-relay
 ```
 
+### HW #23 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:cache
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -1792,6 +1804,7 @@ npm run demo:duplicate
 npm run demo:outbox
 npm run demo:crash-write
 npm run demo:crash-relay
+npm run demo:cache
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

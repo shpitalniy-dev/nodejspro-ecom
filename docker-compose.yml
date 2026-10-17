@@ -53,6 +53,12 @@ services:
       # the rabbitmq service — a real ECONNREFUSED, not a cosmetic mismatch.
       # Override with API_BROKER_URL, never BROKER_URL, if this needs to change.
       BROKER_URL: ${API_BROKER_URL:-amqp://app:app@rabbitmq:5672}
+      # Cache Redis instance (HW #23), read live by RedisCacheService — same
+      # API_*-override reasoning as BROKER_URL just above: a bare
+      # ${REDIS_URL:-...} would pick up ## Grading's host-side
+      # `export REDIS_URL=redis://127.0.0.1:6379` and point this container
+      # at itself instead of the redis-cache service.
+      REDIS_URL: ${API_REDIS_URL:-redis://redis-cache:6379}
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
     # depend on it — that decision was about not requiring vault access,
@@ -95,6 +101,8 @@ services:
       pgbouncer:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      redis-cache:
         condition: service_healthy
     deploy:
       resources:
@@ -312,6 +320,38 @@ services:
         reservations:
           cpus: '0.1'
           memory: 256M
+
+  # Cache Redis instance (HW #23) — product-detail cache-aside. maxmemory
+  # policy is deliberately allkeys-lru, the opposite of the future queue
+  # Redis instance (BullMQ, a later HW #23 slice): BullMQ's own docs say it
+  # "cannot work properly if Redis evicts keys arbitrarily" and insists on
+  # noeviction, while a pure cache wants eviction under memory pressure
+  # instead of refusing writes (noeviction's default behaviour: OOM errors).
+  # maxmemory-policy is one setting per Redis PROCESS — SELECT doesn't scope
+  # it — which is why these are two separate containers, not one Redis on
+  # two logical DBs.
+  redis-cache:
+    image: redis:8.4-alpine
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:6379:6379'
+    command: >
+      redis-server
+      --maxmemory 64mb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 3s
+      timeout: 5s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 128M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
 
   # Opt-in only: `docker compose --profile contract up -d --wait broker`.
   # Pact Broker for HW#16 point 6 — stores the consumer/provider contract

@@ -20,10 +20,13 @@ export const envSchema = z.object({
   // the password without a restart). Exists for external tooling only —
   // psql one-liners, a future ORM CLI — see the Configuration table in
   // README.md for where its real value comes from.
-  DB_URL: z.string().url(),
+  DB_URL: z.url({ protocol: /^postgresql?$/ }),
   // RabbitMQ (HW #19). AMQP is 5672 — 15672 is the management web UI and
   // does not speak AMQP.
   BROKER_URL: z.url({ protocol: /^amqps?$/ }),
+  // Cache Redis instance (HW #23). Read live by RedisCacheService — unlike
+  // DB_URL above, this is not cosmetic.
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }),
 });
 
 export type Env = z.infer<typeof envSchema>;

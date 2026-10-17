@@ -17,6 +17,10 @@ services:
       # also what ## Grading exports for the host-run demos, and leaking that
       # host-oriented value in here would actually break publishing.
       - BROKER_URL=${API_BROKER_URL:-amqp://app:app@rabbitmq:5672}
+      # Same reasoning again, this time for REDIS_URL (HW #23) — NOT keyed on
+      # REDIS_URL itself, since that's also what ## Grading exports for the
+      # host-run demo:cache.
+      - REDIS_URL=${API_REDIS_URL:-redis://redis-cache:6379}
     command: npm run dev
     deploy:
       resources:
