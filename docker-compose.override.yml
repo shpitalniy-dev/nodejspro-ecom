@@ -21,6 +21,10 @@ services:
       # REDIS_URL itself, since that's also what ## Grading exports for the
       # host-run demo:cache.
       - REDIS_URL=${API_REDIS_URL:-redis://redis-cache:6379}
+      # And again for REDIS_QUEUE_URL — applied here even though nothing
+      # reads it live yet, so this file doesn't silently fall behind the
+      # base file's environment block the next time it does.
+      - REDIS_QUEUE_URL=${API_REDIS_QUEUE_URL:-redis://redis-queue:6380}
     command: npm run dev
     deploy:
       resources:

@@ -1729,6 +1729,75 @@ npm run demo:crash-write
 npm run demo:crash-relay
 ```
 
+## Redis: cache, sessions, rate limiting, and queue | HW #23
+
+Two independent uses of the same Redis: a read too expensive to repeat on
+every request (cache), and state that has to survive a process restart
+(session). Both rest on the same principle from the lecture — a cache is a
+deliberate agreement to serve stale data, and TTL/jitter/the lock are just
+technique for managing that staleness. Rate limiting and the queue (BullMQ)
+are next; this covers what's built so far.
+
+### Cache-aside and the single-flight lock
+
+`CacheAsideService` wraps `ProductsService.findById`: a miss loads from the
+DB and writes back with a jittered TTL, so keys warmed together don't all
+expire in the same second and reproduce a stampede on their own. A stampede
+on a vanished key collapses into one DB read via a short-lived lock — one
+caller becomes the leader and repopulates the cache, everyone else polls the
+cache instead of hitting the DB. If the lock itself breaks (stuck leader,
+Redis hiccup), a waiter degrades straight to the DB rather than retrying the
+lock or failing the request.
+
+**What happens if the stampede lock breaks, and why that's acceptable
+here.** The lock is an economy, not a correctness mechanism: the data
+behind it is a pure read, so a broken lock costs at most a few duplicate DB
+calls.
+
+### Two Redis instances
+
+`redis-cache` (`allkeys-lru`) and `redis-queue` (`noeviction`) are separate
+containers, not one Redis on two logical databases — `maxmemory-policy` is a
+per-process setting, and BullMQ's own docs refuse to run reliably under
+eviction. The cache, conversely, must evict under memory pressure rather
+than refuse writes.
+
+### Session with a rolling TTL
+
+`demo:session` proves a session can live in Redis with a TTL that extends
+on activity — no DB, no HTTP, since this project has no real auth yet
+(`OrderOwnershipGuard`'s own comment defers that to HW #24, so there's
+nothing real to wire a session into without getting ahead of it). It uses a
+single whole-key TTL, renewed atomically on each touch — the same pattern
+`connect-redis`/`express-session` actually use — rather than Redis's newer
+per-hash-field TTL commands, which solve a different problem
+(independently-expiring fields within one object) that a single-field
+session doesn't have.
+
+**⚠️ Why not the cache instance.** `allkeys-lru` would eventually evict a
+session under memory pressure — an unreproducible, random logout. Sessions
+live on `redis-queue` instead, where nothing disappears without an explicit
+TTL or delete.
+
+### Measured runs
+
+_Not yet run on a live stack — the numbers below will land after the first
+real `docker compose up -d --wait` + `npm run demo:cache` +
+`npm run demo:session`; this is the output contract, not measured numbers,
+for now._
+
+| Demo           | Output                                                                                           | Exit |
+| -------------- | ------------------------------------------------------------------------------------------------ | ---- |
+| `demo:cache`   | `cache-lru=1 cache-maxmemory=1 warmed=? ttl-distinct=? concurrent=20 db-calls=1 db-calls-warm=0` | ?    |
+| `demo:session` | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                 | ?    |
+
+### Running the demos
+
+```bash
+npm run demo:cache
+npm run demo:session
+```
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -1740,6 +1809,7 @@ docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export REDIS_URL=redis://127.0.0.1:6379
+export REDIS_QUEUE_URL=redis://127.0.0.1:6380
 export SKIP_VAULT=1
 ```
 
@@ -1778,6 +1848,7 @@ npm run build
 npm run migrate
 npm run seed
 npm run demo:cache
+npm run demo:session
 ```
 
 ### Cumulative commands
@@ -1805,6 +1876,7 @@ npm run demo:outbox
 npm run demo:crash-write
 npm run demo:crash-relay
 npm run demo:cache
+npm run demo:session
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

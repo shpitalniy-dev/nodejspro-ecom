@@ -18,6 +18,7 @@
     "demo:race": "bash scripts/with-secrets.sh dev node build/transactions/demo-race.js",
     "demo:realtime": "node scripts/realtime-demo.mjs",
     "demo:retry": "bash scripts/with-secrets.sh dev node build/transactions/demo-retry.js",
+    "demo:session": "bash scripts/with-secrets.sh dev node build/services/redis/demo/demo-session.js",
     "demo:workers": "bash scripts/with-secrets.sh dev node build/transactions/demo-workers.js",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",

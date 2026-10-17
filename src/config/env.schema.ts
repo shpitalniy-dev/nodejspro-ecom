@@ -27,6 +27,12 @@ export const envSchema = z.object({
   // Cache Redis instance (HW #23). Read live by RedisCacheService — unlike
   // DB_URL above, this is not cosmetic.
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  // Queue/session Redis instance (HW #23 points 3 & 5). Not read by the
+  // live app yet — no session endpoints or BullMQ wiring exist this slice
+  // — but required here so .env.example / docker-compose stay consistent,
+  // and so demo-session.ts (and later the BullMQ queue) point at the right
+  // instance.
+  REDIS_QUEUE_URL: z.url({ protocol: /^rediss?$/ }),
 });
 
 export type Env = z.infer<typeof envSchema>;
