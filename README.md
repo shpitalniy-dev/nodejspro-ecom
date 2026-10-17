@@ -1423,7 +1423,7 @@ shop.unroutable (fanout) ──▶ shop.unroutable (queue)
 ```
 
 - The **worker** declares the topology when it starts. The **producer**
-  (`OrderEventPublisher`) declares nothing, so it never needs to know who
+  (`RabbitMqPublisher`) declares nothing, so it never needs to know who
   listens. The demos reset and redeclare it themselves.
 - `npm run rabbitmq:topology` runs the same declaration once as a bootstrap
   step. Run it before the first API publish: a publish to a missing exchange
@@ -1787,18 +1787,40 @@ accident of resetting on a clock edge (up to 2x the limit right at the
 boundary), not as a deliberate property — token bucket allows one on
 purpose, capped at exactly `capacity`.
 
+### Queue (BullMQ)
+
+`PATCH /orders/:orderId/status` writes an `order.status_changed` outbox row
+(skipped if the status already matches). `RelayService` — the same relay
+HW #22 uses for `order.placed`, now claiming both event types — delivers it
+to BullMQ via `BullMqPublisher`; a separate process, `WebhookConsumerWorker`,
+consumes the job and POSTs to `ORDER_STATUS_WEBHOOK_URL` if one is
+configured. Before posting, it checks `processed_messages`
+(`consumer = 'webhook'`) for the event's `eventId` and records it there
+right after a successful delivery, so a redelivered job doesn't POST twice.
+
+Retries use exponential backoff with jitter; `jobId` is the event's
+`eventId`, so dedup survives a retry. `removeOnComplete` uses `{ age: … }`,
+not `true` — `true` deletes the job record on completion, which disables
+`jobId` dedup for anything that reuses the id. The scheduler uses
+`upsertJobScheduler`, not the removed repeatable-jobs API. The queue lives
+on `redis-queue` (`noeviction`); its `Queue` (producer, in `RelayModule`)
+and `Worker` (consumer, in `WebhookConsumerModule`) always use two
+independent Redis connections, since a `Worker`'s blocking commands would
+stall `Queue.add()` calls on a shared one.
+
 ### Measured runs
 
 _Not yet run on a live stack — the numbers below will land after the first
 real `docker compose up -d --wait` + `npm run demo:cache` +
-`npm run demo:session` + `npm run demo:ratelimit`; this is the output
-contract, not measured numbers, for now._
+`npm run demo:session` + `npm run demo:ratelimit` + `npm run demo:queue`;
+this is the output contract, not measured numbers, for now._
 
 | Demo             | Output                                                                                           | Exit |
 | ---------------- | ------------------------------------------------------------------------------------------------ | ---- |
 | `demo:cache`     | `cache-lru=1 cache-maxmemory=1 warmed=? ttl-distinct=? concurrent=20 db-calls=1 db-calls-warm=0` | ?    |
 | `demo:session`   | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                 | ?    |
 | `demo:ratelimit` | `instances=2 limit=5 requests=16 allowed=5 blocked=11 status=429 retry-after=1`                  | ?    |
+| `demo:queue`     | `queue-noeviction=1 attempts=3 completed=1 added=2 queued=1 schedulers=1 scheduled-runs=?`       | ?    |
 
 ### Running the demos
 
@@ -1806,6 +1828,7 @@ contract, not measured numbers, for now._
 npm run demo:cache
 npm run demo:session
 npm run demo:ratelimit
+npm run demo:queue
 ```
 
 ## Grading
@@ -1860,6 +1883,7 @@ npm run seed
 npm run demo:cache
 npm run demo:session
 npm run demo:ratelimit
+npm run demo:queue
 ```
 
 ### Cumulative commands
@@ -1889,6 +1913,7 @@ npm run demo:crash-relay
 npm run demo:cache
 npm run demo:session
 npm run demo:ratelimit
+npm run demo:queue
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

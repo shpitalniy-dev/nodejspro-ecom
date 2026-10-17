@@ -1,18 +1,23 @@
 import type { INestApplication } from '@nestjs/common';
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
+import { Queue } from 'bullmq';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import type { DataSource } from 'typeorm';
 import { IsNull } from 'typeorm';
 
+import type { WebhookWorkerEnv } from '../../../config/env.schema.ts';
 import { validateWorker } from '../../../config/env.schema.ts';
-import { OrderEventPublisher } from '../../../controllers/orders/orders.publisher.ts';
 import { Outbox } from '../../../entities/outbox.entity.ts';
+import { BullMqPublisher } from '../../../services/bullmq/bullmq-publisher.service.ts';
 import { RabbitMqService } from '../../../services/rabbitmq/rabbitmq.service.ts';
+import { RabbitMqPublisher } from '../../../services/rabbitmq/rabbitmq-publisher.service.ts';
+import { createRedisClient } from '../../../services/redis/redis.factory.ts';
+import { QUEUE_NAME } from '../../webhook/webhook-consumer.worker.ts';
 import { RelayService } from '../relay.service.ts';
 
 export async function countOutboxRows(
@@ -65,7 +70,26 @@ export async function resetStaleOutboxRows(
 
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateWorker })],
-  providers: [RabbitMqService, OrderEventPublisher, RelayService],
+  providers: [
+    RabbitMqService,
+    RabbitMqPublisher,
+    {
+      // Same producer-connection shape RelayModule itself uses — see
+      // relay.module.ts's own comment on why this can't share a socket
+      // with WebhookConsumerWorker's Worker connection.
+      provide: Queue,
+      useFactory: (config: ConfigService<WebhookWorkerEnv, true>) =>
+        new Queue(QUEUE_NAME, {
+          connection: createRedisClient(
+            config.get('REDIS_QUEUE_URL', { infer: true }),
+            { maxRetriesPerRequest: null },
+          ),
+        }),
+      inject: [ConfigService],
+    },
+    BullMqPublisher,
+    RelayService,
+  ],
 })
 export class DemoRelayModule {}
 

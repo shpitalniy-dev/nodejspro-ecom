@@ -3,10 +3,10 @@ import 'reflect-metadata';
 import { NestFactory } from '@nestjs/core';
 import { DataSource } from 'typeorm';
 
-import { OrderEventPublisher } from '../../../controllers/orders/orders.publisher.ts';
 import { dataSourceOptions } from '../../../data-source.ts';
 import { connectBroker } from '../../../services/rabbitmq/rabbitmq.connection.ts';
 import { QUEUE } from '../../../services/rabbitmq/rabbitmq.topology.ts';
+import { RabbitMqPublisher } from '../../../services/rabbitmq/rabbitmq-publisher.service.ts';
 import { requireEnv } from '../../../utils/require-env.ts';
 import { waitUntil } from '../../../utils/wait-until.ts';
 
@@ -55,10 +55,10 @@ async function main(): Promise<void> {
   try {
     const buyerId = await resetDemoFixtures(dataSource, STOCK);
 
-    const orderEventPublisher = app.get(OrderEventPublisher);
+    const rabbitMqPublisher = app.get(RabbitMqPublisher);
     const [orderId] = await publishOrders(
       dataSource,
-      orderEventPublisher,
+      rabbitMqPublisher,
       buyerId,
       1,
     );

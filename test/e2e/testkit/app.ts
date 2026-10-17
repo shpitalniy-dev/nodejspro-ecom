@@ -42,19 +42,14 @@ export async function startTestApp(
   process.env.DB_PASSWORD_FILE = passwordFile;
 
   const { AppModule } = await import('../../../src/app.module.ts');
-  const { OrderEventPublisher } = await import(
-    '../../../src/controllers/orders/orders.publisher.ts'
-  );
 
-  // e2e never talks to a broker: order creation still goes through the real
-  // service, only the publish is replaced. Real publishing is covered by the
-  // consumer/publisher demos.
+  // e2e never talks to a broker: order creation writes to the outbox table
+  // and returns, with nothing in the request path calling RabbitMqService
+  // directly. Real publishing is covered by the consumer/publisher/relay
+  // demos.
   const moduleRef = await Test.createTestingModule({
     imports: [AppModule],
-  })
-    .overrideProvider(OrderEventPublisher)
-    .useValue({ publishOrderPlaced: async () => undefined })
-    .compile();
+  }).compile();
 
   const app = moduleRef.createNestApplication<NestExpressApplication>({
     bodyParser: false,

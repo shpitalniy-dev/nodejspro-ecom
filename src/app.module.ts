@@ -7,7 +7,6 @@ import { OrderEventsService } from './controllers/orders/order-events.service.ts
 import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
 import { OrdersController } from './controllers/orders/orders.controller.ts';
 import { OrdersGateway } from './controllers/orders/orders.gateway.ts';
-import { OrderEventPublisher } from './controllers/orders/orders.publisher.ts';
 import { OrdersService } from './controllers/orders/orders.service.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
 import { ProductsListRateLimitGuard } from './controllers/products/products.guards.ts';
@@ -37,7 +36,6 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     DatabaseService,
     DataSourceService,
     RabbitMqService,
-    OrderEventPublisher,
     CacheRedisConnection,
     QueueRedisConnection,
     ProductsListRateLimitGuard,
