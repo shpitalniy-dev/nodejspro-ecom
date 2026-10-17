@@ -1779,23 +1779,33 @@ session under memory pressure — an unreproducible, random logout. Sessions
 live on `redis-queue` instead, where nothing disappears without an explicit
 TTL or delete.
 
+### Rate limiting
+
+**Model: token bucket, chosen deliberately.** It allows a controlled burst
+above the sustained rate. Fixed window also allows a burst, but only as an
+accident of resetting on a clock edge (up to 2x the limit right at the
+boundary), not as a deliberate property — token bucket allows one on
+purpose, capped at exactly `capacity`.
+
 ### Measured runs
 
 _Not yet run on a live stack — the numbers below will land after the first
 real `docker compose up -d --wait` + `npm run demo:cache` +
-`npm run demo:session`; this is the output contract, not measured numbers,
-for now._
+`npm run demo:session` + `npm run demo:ratelimit`; this is the output
+contract, not measured numbers, for now._
 
-| Demo           | Output                                                                                           | Exit |
-| -------------- | ------------------------------------------------------------------------------------------------ | ---- |
-| `demo:cache`   | `cache-lru=1 cache-maxmemory=1 warmed=? ttl-distinct=? concurrent=20 db-calls=1 db-calls-warm=0` | ?    |
-| `demo:session` | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                 | ?    |
+| Demo             | Output                                                                                           | Exit |
+| ---------------- | ------------------------------------------------------------------------------------------------ | ---- |
+| `demo:cache`     | `cache-lru=1 cache-maxmemory=1 warmed=? ttl-distinct=? concurrent=20 db-calls=1 db-calls-warm=0` | ?    |
+| `demo:session`   | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                 | ?    |
+| `demo:ratelimit` | `instances=2 limit=5 requests=16 allowed=5 blocked=11 status=429 retry-after=1`                  | ?    |
 
 ### Running the demos
 
 ```bash
 npm run demo:cache
 npm run demo:session
+npm run demo:ratelimit
 ```
 
 ## Grading
@@ -1849,6 +1859,7 @@ npm run migrate
 npm run seed
 npm run demo:cache
 npm run demo:session
+npm run demo:ratelimit
 ```
 
 ### Cumulative commands
@@ -1877,6 +1888,7 @@ npm run demo:crash-write
 npm run demo:crash-relay
 npm run demo:cache
 npm run demo:session
+npm run demo:ratelimit
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

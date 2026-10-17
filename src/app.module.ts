@@ -10,6 +10,7 @@ import { OrdersGateway } from './controllers/orders/orders.gateway.ts';
 import { OrderEventPublisher } from './controllers/orders/orders.publisher.ts';
 import { OrdersService } from './controllers/orders/orders.service.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
+import { ProductsListRateLimitGuard } from './controllers/products/products.guards.ts';
 import { ProductsService } from './controllers/products/products.service.ts';
 import { IdempotencyKeyInterceptor } from './interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from './interceptors/location-header.interceptor.ts';
@@ -18,7 +19,9 @@ import { DataSourceService } from './services/data-source.service.ts';
 import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
 import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
-import { RedisCacheService } from './services/redis/redis-cache.service.ts';
+import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
+import { CacheRedisConnection } from './services/redis/cache-redis-connection.service.ts';
+import { QueueRedisConnection } from './services/redis/queue-redis-connection.service.ts';
 
 @Module({
   controllers: [HealthController, ProductsController, OrdersController],
@@ -35,12 +38,20 @@ import { RedisCacheService } from './services/redis/redis-cache.service.ts';
     DataSourceService,
     RabbitMqService,
     OrderEventPublisher,
-    RedisCacheService,
+    CacheRedisConnection,
+    QueueRedisConnection,
+    ProductsListRateLimitGuard,
     {
       provide: CacheAsideService,
-      useFactory: async (redis: RedisCacheService) =>
-        new CacheAsideService(await redis.getClient()),
-      inject: [RedisCacheService],
+      useFactory: async (conn: CacheRedisConnection) =>
+        new CacheAsideService(await conn.getClient()),
+      inject: [CacheRedisConnection],
+    },
+    {
+      provide: TokenBucketService,
+      useFactory: async (conn: QueueRedisConnection) =>
+        new TokenBucketService(await conn.getClient()),
+      inject: [QueueRedisConnection],
     },
   ],
   imports: [

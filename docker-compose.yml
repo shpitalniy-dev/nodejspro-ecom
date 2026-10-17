@@ -53,17 +53,16 @@ services:
       # the rabbitmq service — a real ECONNREFUSED, not a cosmetic mismatch.
       # Override with API_BROKER_URL, never BROKER_URL, if this needs to change.
       BROKER_URL: ${API_BROKER_URL:-amqp://app:app@rabbitmq:5672}
-      # Cache Redis instance (HW #23), read live by RedisCacheService — same
-      # API_*-override reasoning as BROKER_URL just above: a bare
+      # Cache Redis instance (HW #23), read live by CacheRedisConnection —
+      # same API_*-override reasoning as BROKER_URL just above: a bare
       # ${REDIS_URL:-...} would pick up ## Grading's host-side
       # `export REDIS_URL=redis://127.0.0.1:6379` and point this container
       # at itself instead of the redis-cache service.
       REDIS_URL: ${API_REDIS_URL:-redis://redis-cache:6379}
-      # Queue/session Redis instance (HW #23 points 3 & 5) — not read live by
-      # anything yet (demo-session.ts connects to it directly, host-side),
-      # but required so Zod validation and .env.example stay in sync. Same
-      # API_*-override applied preemptively, so there's no repeat of the
-      # REDIS_URL override-file bug once this becomes a real connection.
+      # Queue/session Redis instance (HW #23 points 3-5) — read live by
+      # QueueRedisConnection (RateLimitGuard's TokenBucketService) as of
+      # point 4; demo-session.ts (point 3) still connects to it directly,
+      # host-side. Same API_*-override reasoning as REDIS_URL above.
       REDIS_QUEUE_URL: ${API_REDIS_QUEUE_URL:-redis://redis-queue:6380}
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
@@ -109,6 +108,8 @@ services:
       rabbitmq:
         condition: service_healthy
       redis-cache:
+        condition: service_healthy
+      redis-queue:
         condition: service_healthy
     deploy:
       resources:
@@ -365,10 +366,11 @@ services:
   # pressure, whether that data is a session (a dropped one means a logout
   # nobody can reproduce) or a queued job (a dropped one means lost work).
   # AOF everysec per the homework's own "preferably" guidance for this
-  # instance. Currently used by demo-session.ts only; BullMQ wiring (point
-  # 5) lands on this same instance later, which is the whole reason it's
-  # two containers and not two logical DBs on one — see redis-cache's own
-  # comment above for the maxmemory-policy-is-per-process reasoning.
+  # instance. Used by demo-session.ts (point 3) and RateLimitGuard's
+  # TokenBucketService (point 4) today; BullMQ wiring (point 5) lands on
+  # this same instance later, which is the whole reason it's two containers
+  # and not two logical DBs on one — see redis-cache's own comment above
+  # for the maxmemory-policy-is-per-process reasoning.
   redis-queue:
     image: redis:8.4-alpine
     restart: unless-stopped

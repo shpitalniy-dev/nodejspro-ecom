@@ -5,8 +5,10 @@ import {
   Param,
   ParseIntPipe,
   Query,
+  UseGuards,
 } from '@nestjs/common';
 
+import { ProductsListRateLimitGuard } from './products.guards.ts';
 import { ProductsService } from './products.service.ts';
 
 @Controller('products')
@@ -14,6 +16,7 @@ export class ProductsController {
   constructor(private readonly productsService: ProductsService) {}
 
   @Get()
+  @UseGuards(ProductsListRateLimitGuard)
   async list(
     @Query('limit', ParseIntPipe) limit: number,
     @Query('cursor') cursor?: string,

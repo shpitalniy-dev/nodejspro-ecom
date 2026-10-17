@@ -24,14 +24,13 @@ export const envSchema = z.object({
   // RabbitMQ (HW #19). AMQP is 5672 — 15672 is the management web UI and
   // does not speak AMQP.
   BROKER_URL: z.url({ protocol: /^amqps?$/ }),
-  // Cache Redis instance (HW #23). Read live by RedisCacheService — unlike
-  // DB_URL above, this is not cosmetic.
+  // Cache Redis instance (HW #23). Read live by CacheRedisConnection —
+  // unlike DB_URL above, this is not cosmetic.
   REDIS_URL: z.url({ protocol: /^rediss?$/ }),
-  // Queue/session Redis instance (HW #23 points 3 & 5). Not read by the
-  // live app yet — no session endpoints or BullMQ wiring exist this slice
-  // — but required here so .env.example / docker-compose stay consistent,
-  // and so demo-session.ts (and later the BullMQ queue) point at the right
-  // instance.
+  // Queue/session Redis instance (HW #23 points 3-5). Read live by
+  // QueueRedisConnection as of point 4 (RateLimitGuard's
+  // TokenBucketService); demo-session.ts (point 3) still connects to it
+  // directly, host-side; BullMQ (point 5) lands on it later too.
   REDIS_QUEUE_URL: z.url({ protocol: /^rediss?$/ }),
 });
 
