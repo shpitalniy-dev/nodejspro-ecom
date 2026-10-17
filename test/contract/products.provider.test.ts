@@ -6,17 +6,21 @@ import { Verifier } from '@pact-foundation/pact';
 import { startTestApp } from '../e2e/testkit/app.ts';
 import type { TestPg } from '../integration/testkit/postgres-container.ts';
 import { startTestPostgres } from '../integration/testkit/postgres-container.ts';
+import type { TestRedis } from '../integration/testkit/redis-container.ts';
+import { startTestRedis } from '../integration/testkit/redis-container.ts';
 
 import { CONTRACT_PRODUCT_KEY } from './testkit/fixtures.ts';
 
 describe('Pact provider verification: ecom-api against the contract', () => {
   let pg: TestPg;
+  let redis: TestRedis;
   let app: INestApplication;
   let providerBaseUrl: string;
 
   beforeAll(async () => {
     pg = await startTestPostgres();
-    app = await startTestApp(pg.container);
+    redis = await startTestRedis();
+    app = await startTestApp(pg.container, redis);
     await app.listen(0); // OS-assigned free port — Verifier needs a real listener
 
     const address = app.getHttpServer().address();
@@ -31,6 +35,7 @@ describe('Pact provider verification: ecom-api against the contract', () => {
   afterAll(async () => {
     await app.close();
     await pg.stop();
+    await redis.stop();
   });
 
   test('all interactions in the local pact are verified', async () => {

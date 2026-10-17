@@ -70,6 +70,7 @@
     "@pact-foundation/pact": "17.1.4",
     "@testcontainers/postgresql": "12.1.0",
     "@testcontainers/rabbitmq": "12.1.0",
+    "@testcontainers/redis": "12.1.0",
     "@types/amqplib": "0.10.8",
     "@types/express": "5.0.6",
     "@types/jest": "30.0.0",
