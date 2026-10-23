@@ -12,6 +12,8 @@ import {
 } from '../integration/testkit/builders.ts';
 import type { TestPg } from '../integration/testkit/postgres-container.ts';
 import { startTestPostgres } from '../integration/testkit/postgres-container.ts';
+import type { TestRedis } from '../integration/testkit/redis-container.ts';
+import { startTestRedis } from '../integration/testkit/redis-container.ts';
 
 import { startTestApp } from './testkit/app.ts';
 
@@ -23,18 +25,21 @@ import { startTestApp } from './testkit/app.ts';
 // order itself goes through supertest.
 describe('Orders E2E (full Nest app, real postgres:17-alpine via testcontainers)', () => {
   let pg: TestPg;
+  let redis: TestRedis;
   let app: INestApplication;
 
   beforeAll(async () => {
     pg = await startTestPostgres();
-    app = await startTestApp(pg.container);
+    redis = await startTestRedis();
+    app = await startTestApp(pg.container, redis);
   }, 120000);
 
   afterAll(async () => {
-    // App first, then the container — nothing should still be holding a
+    // App first, then the containers — nothing should still be holding a
     // connection into a container that's about to stop.
     await app.close();
     await pg.stop();
+    await redis.stop();
   });
 
   test('happy path: create an order, then read it back', async () => {

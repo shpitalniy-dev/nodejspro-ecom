@@ -9,6 +9,7 @@ import { In } from 'typeorm';
 
 import type { OrderStatus } from '../../entities/order.entity.ts';
 import { Order as OrderEntity } from '../../entities/order.entity.ts';
+import { Outbox } from '../../entities/outbox.entity.ts';
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
 import { User as UserEntity } from '../../entities/user.entity.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
@@ -23,7 +24,11 @@ import { mustGet } from '../../utils/must-get.ts';
 import { OrderEventsService } from './order-events.service.ts';
 import type { CreateOrderItemDto } from './orders.dto.ts';
 import type { Order, OrderListResponse } from './orders.types.ts';
-import { ORDER_RELATIONS, toApiOrder } from './orders.utils.ts';
+import {
+  ORDER_RELATIONS,
+  toApiOrder,
+  toOrderStatusChangedEvent,
+} from './orders.utils.ts';
 
 // No auth yet (Architecture Note: "Auth lands at HW#24, not sooner") and
 // CreateOrderRequest has no userId field (additionalProperties: false, so
@@ -97,20 +102,68 @@ export class OrdersService {
   // out of scope for this HW; the point here is the notification, not the
   // workflow. The room-emit is a side effect of this business-logic
   // method, never something OrdersController triggers directly.
+  //
+  // HW#23: also writes an order.status_changed outbox row, in the SAME
+  // transaction as the status UPDATE — a bare queue.add() as a separate
+  // step afterward would be the exact dual-write gap HW#22 fixed for
+  // order.placed, just against BullMQ instead of RabbitMQ. The realtime
+  // publish() below stays outside the transaction and unchanged — it's an
+  // in-process emit (OrdersGateway holds the WS connections in memory),
+  // not a call to an external system, so it carries no dual-write risk.
+  //
+  // A same-status call is a no-op: it skips the UPDATE and the outbox
+  // write (and so the realtime notify below), rather than emitting a
+  // fresh order.status_changed event — and so a fresh webhook delivery —
+  // for a transition that didn't happen. A row lock (pessimistic_write)
+  // makes this safe under a concurrent duplicate request: without it, two
+  // callers could both read the old status before either writes, and both
+  // would decide "changed."
   async updateStatus(orderId: number, status: OrderStatus): Promise<Order> {
     const manager = await this.dataSourceService.getManager();
-    const result = await manager
-      .getRepository(OrderEntity)
-      .update({ id: orderId }, { status, updatedAt: new Date() });
 
-    if (result.affected === 0) {
+    const outcome = await manager.transaction(async tx => {
+      const repo = tx.getRepository(OrderEntity);
+      const existing = await repo.findOne({
+        where: { id: orderId },
+        lock: { mode: 'pessimistic_write' },
+      });
+
+      if (!existing) {
+        return 'not_found' as const;
+      }
+
+      if (existing.status === status) {
+        return 'noop' as const;
+      }
+
+      await repo.update({ id: orderId }, { status, updatedAt: new Date() });
+
+      const event = toOrderStatusChangedEvent({
+        orderId,
+        status,
+        occurredAt: new Date(),
+      });
+
+      await tx.getRepository(Outbox).save({
+        aggregateType: 'Order',
+        aggregateId: String(orderId),
+        type: event.type,
+        payload: event as unknown as Record<string, unknown>,
+      });
+
+      return 'changed' as const;
+    });
+
+    if (outcome === 'not_found') {
       throw new NotFoundException({
         title: 'Order not found',
         detail: `Order "${orderId}" not found.`,
       });
     }
 
-    this.orderEvents.publish(orderId, status);
+    if (outcome === 'changed') {
+      this.orderEvents.publish(orderId, status);
+    }
 
     const order = await this.findById(orderId);
 

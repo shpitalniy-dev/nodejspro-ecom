@@ -32,6 +32,20 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+        '429':
+          description: >
+            Rate limit exceeded (HW #23) — RateLimitGuard, shared across
+            instances via Redis.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: string
+                example: '2'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
   /products/{productId}:
     get:

@@ -1,27 +1,18 @@
 import { Injectable, OnModuleDestroy } from '@nestjs/common';
 import type { ConfirmChannel } from 'amqplib';
 
-import { RabbitMqService } from '../../services/rabbitmq/rabbitmq.service.ts';
-import { EXCHANGE } from '../../services/rabbitmq/rabbitmq.topology.ts';
+import type { PublishableEvent } from '../outbox/outbox.types.ts';
 
-import type { Order, OrderPlacedEvent } from './orders.types.ts';
-import { buildOrderPlaced } from './orders.utils.ts';
+import { RabbitMqService } from './rabbitmq.service.ts';
+import { EXCHANGE } from './rabbitmq.topology.ts';
 
-// Producer side. Declares nothing: the consumer owns topology, so the
-// producer never needs to know who listens. If the exchange does not exist
-// yet (no consumer has ever started), the broker closes the channel and the
-// publish rejects.
 @Injectable()
-export class OrderEventPublisher implements OnModuleDestroy {
+export class RabbitMqPublisher implements OnModuleDestroy {
   private channel: Promise<ConfirmChannel> | null = null;
 
   constructor(private readonly broker: RabbitMqService) {}
 
-  async publishOrderPlaced(order: Order): Promise<void> {
-    await this.publish(buildOrderPlaced(order));
-  }
-
-  async publish(event: OrderPlacedEvent): Promise<void> {
+  async publish(event: PublishableEvent): Promise<void> {
     const channel = await this.getChannel();
 
     channel.publish(EXCHANGE, event.type, Buffer.from(JSON.stringify(event)), {

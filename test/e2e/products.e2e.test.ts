@@ -4,21 +4,26 @@ import request from 'supertest';
 import { aProduct } from '../integration/testkit/builders.ts';
 import type { TestPg } from '../integration/testkit/postgres-container.ts';
 import { startTestPostgres } from '../integration/testkit/postgres-container.ts';
+import type { TestRedis } from '../integration/testkit/redis-container.ts';
+import { startTestRedis } from '../integration/testkit/redis-container.ts';
 
 import { startTestApp } from './testkit/app.ts';
 
 describe('Products E2E — cursor pagination', () => {
   let pg: TestPg;
+  let redis: TestRedis;
   let app: INestApplication;
 
   beforeAll(async () => {
     pg = await startTestPostgres();
-    app = await startTestApp(pg.container);
+    redis = await startTestRedis();
+    app = await startTestApp(pg.container, redis);
   }, 120000);
 
   afterAll(async () => {
     await app.close();
     await pg.stop();
+    await redis.stop();
   });
 
   test('limit + cursor walks through every page with no overlap or gap', async () => {

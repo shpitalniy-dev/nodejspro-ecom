@@ -20,10 +20,19 @@ export const envSchema = z.object({
   // the password without a restart). Exists for external tooling only —
   // psql one-liners, a future ORM CLI — see the Configuration table in
   // README.md for where its real value comes from.
-  DB_URL: z.string().url(),
+  DB_URL: z.url({ protocol: /^postgres(ql)?$/ }),
   // RabbitMQ (HW #19). AMQP is 5672 — 15672 is the management web UI and
   // does not speak AMQP.
   BROKER_URL: z.url({ protocol: /^amqps?$/ }),
+  // Cache Redis instance (HW #23). Read live by CacheRedisConnection —
+  // unlike DB_URL above, this is not cosmetic.
+  REDIS_URL: z.url({ protocol: /^rediss?$/ }),
+  // Queue/session Redis instance (HW #23 points 3-5). Read live by
+  // QueueRedisConnection as of point 4 (RateLimitGuard's
+  // TokenBucketService) and point 5 (the webhook worker's Queue/Worker
+  // connections); demo-session.ts (point 3) still connects to it directly,
+  // host-side.
+  REDIS_QUEUE_URL: z.url({ protocol: /^rediss?$/ }),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -38,6 +47,21 @@ const workerEnvSchema = envSchema.partial({ PORT: true });
 
 export function validateWorker(raw: Record<string, unknown>): Env {
   return parseWith(workerEnvSchema, raw) as Env;
+}
+
+// The webhook worker (HW #23 point 5) is the only process that reads
+// ORDER_STATUS_WEBHOOK_URL — not added to the shared envSchema, since the
+// `api` process never reads it and shouldn't be required to validate it.
+const webhookWorkerEnvSchema = workerEnvSchema.extend({
+  ORDER_STATUS_WEBHOOK_URL: z.url().optional(),
+});
+
+export type WebhookWorkerEnv = z.infer<typeof webhookWorkerEnvSchema>;
+
+export function validateWebhookWorker(
+  raw: Record<string, unknown>,
+): WebhookWorkerEnv {
+  return parseWith(webhookWorkerEnvSchema, raw);
 }
 
 function parseWith<T extends z.ZodType>(

@@ -16,7 +16,7 @@ import { resetBroker, startFulfillmentWorker } from './demo.utils.ts';
 // demo:dlq: one poison message (not an order.placed) must end up in the DLQ
 // with a readable reason, and must not block the work queue or apply an effect.
 //
-// The poison is published raw, bypassing OrderEventPublisher on purpose: the
+// The poison is published raw, bypassing RabbitMqPublisher on purpose: the
 // typed publisher can only send valid events.
 
 const DEAD_LETTER_REASONS = [

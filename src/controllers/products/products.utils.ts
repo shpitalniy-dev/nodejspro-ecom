@@ -12,3 +12,8 @@ export function toApiProduct(entity: ProductEntity): Product {
     created_at: entity.createdAt.toISOString(),
   };
 }
+
+export const productCacheKey = (id: number): string => `product:${id}`;
+
+export const jitteredProductTtlSeconds = (): number =>
+  300 + Math.floor(Math.random() * 61);

@@ -1423,7 +1423,7 @@ shop.unroutable (fanout) ──▶ shop.unroutable (queue)
 ```
 
 - The **worker** declares the topology when it starts. The **producer**
-  (`OrderEventPublisher`) declares nothing, so it never needs to know who
+  (`RabbitMqPublisher`) declares nothing, so it never needs to know who
   listens. The demos reset and redeclare it themselves.
 - `npm run rabbitmq:topology` runs the same declaration once as a bootstrap
   step. Run it before the first API publish: a publish to a missing exchange
@@ -1729,6 +1729,131 @@ npm run demo:crash-write
 npm run demo:crash-relay
 ```
 
+## Redis: cache, sessions, rate limiting, and queue | HW #23
+
+Four independent uses of the same Redis deployment: a read too expensive to
+repeat on every request (cache), state that has to survive a process
+restart (session), a limit shared across pods (rate limiting), and work
+too slow for an HTTP request (queue). The cache and session halves rest on
+the same principle from the lecture — a cache is a deliberate agreement to
+serve stale data, and TTL/jitter/the lock are just technique for managing
+that staleness.
+
+### Cache-aside and the single-flight lock
+
+`CacheAsideService` wraps `ProductsService.findById`: a miss loads from the
+DB and writes back with a jittered TTL, so keys warmed together don't all
+expire in the same second and reproduce a stampede on their own. A stampede
+on a vanished key collapses into one DB read via a short-lived lock — one
+caller becomes the leader and repopulates the cache, everyone else polls the
+cache instead of hitting the DB. If the lock itself breaks (stuck leader,
+Redis hiccup), a waiter degrades straight to the DB rather than retrying the
+lock or failing the request.
+
+**What happens if the stampede lock breaks, and why that's acceptable
+here.** The lock is an economy, not a correctness mechanism: the data
+behind it is a pure read, so a broken lock costs at most a few duplicate DB
+calls.
+
+### Two Redis instances
+
+`redis-cache` (`allkeys-lru`) and `redis-queue` (`noeviction`) are separate
+containers, not one Redis on two logical databases — `maxmemory-policy` is a
+per-process setting, and BullMQ's own docs refuse to run reliably under
+eviction. The cache, conversely, must evict under memory pressure rather
+than refuse writes.
+
+### Session with a rolling TTL
+
+`demo:session` proves a session can live in Redis with a TTL that extends
+on activity — no DB, no HTTP, since this project has no real auth yet
+(`OrderOwnershipGuard`'s own comment defers that to HW #24, so there's
+nothing real to wire a session into without getting ahead of it). It uses a
+single whole-key TTL, renewed atomically on each touch — the same pattern
+`connect-redis`/`express-session` actually use — rather than Redis's newer
+per-hash-field TTL commands, which solve a different problem
+(independently-expiring fields within one object) that a single-field
+session doesn't have.
+
+**⚠️ Why not the cache instance.** `allkeys-lru` would eventually evict a
+session under memory pressure — an unreproducible, random logout. Sessions
+live on `redis-queue` instead, where nothing disappears without an explicit
+TTL or delete.
+
+### Rate limiting
+
+**Model: token bucket, chosen deliberately.** It allows a controlled burst
+above the sustained rate. Fixed window also allows a burst, but only as an
+accident of resetting on a clock edge (up to 2x the limit right at the
+boundary), not as a deliberate property — token bucket allows one on
+purpose, capped at exactly `capacity`.
+
+### Queue (BullMQ)
+
+`PATCH /orders/:orderId/status` writes an `order.status_changed` outbox row
+(skipped if the status already matches). `RelayService` — the same relay
+HW #22 uses for `order.placed`, now claiming both event types — delivers it
+to BullMQ via `BullMqPublisher`; a separate process, `WebhookConsumerWorker`,
+consumes the job and POSTs to `ORDER_STATUS_WEBHOOK_URL` if one is
+configured. Before posting, it checks `processed_messages`
+(`consumer = 'webhook'`) for the event's `eventId` and records it there
+right after a successful delivery, so a redelivered job doesn't POST twice.
+
+Retries use exponential backoff with jitter; `jobId` is the event's
+`eventId`, so dedup survives a retry. `removeOnComplete` uses `{ age: … }`,
+not `true` — `true` deletes the job record on completion, which disables
+`jobId` dedup for anything that reuses the id. The scheduler uses
+`upsertJobScheduler`, not the removed repeatable-jobs API. The queue lives
+on `redis-queue` (`noeviction`); its `Queue` (producer, in `RelayModule`)
+and `Worker` (consumer, in `WebhookConsumerModule`) always use two
+independent Redis connections, since a `Worker`'s blocking commands would
+stall `Queue.add()` calls on a shared one.
+
+### What's deliberately left out
+
+- **`demo:queue` is not wired to the real webhook path.** It's a standalone
+  demonstration of BullMQ's own mechanics (retry/backoff, `jobId` dedup, the
+  job scheduler) against a throwaway `demo-queue` queue — not a client of
+  `WebhookConsumerWorker`. It satisfies HW #23 point 5 on its own; the real
+  `order.status_changed` → BullMQ → webhook path (above) is a separate,
+  independently-exercised flow, by design, not an oversight.
+- **A webhook over BullMQ isn't necessarily the best fit for a slow,
+  arbitrary HTTP call.** The simpler, more common pattern for outbox-based
+  webhook delivery is the relay POSTing directly, with retry/backoff
+  driven by the outbox row's own `attempts` column — no second queue
+  in between. BullMQ was kept here because wiring it into a real feature
+  was the point of this exercise; revisiting that design is out of scope
+  for the time available on this HW.
+- **No real session/auth exists yet.** `demo:session` proves the Redis
+  mechanics (rolling TTL, survives a process restart) in isolation — it's
+  not connected to the running app, and there is no session-backed request
+  path to test it against. Real user sessions, and what they do or don't
+  share with a JWT, land in HW #24 (`OrderOwnershipGuard`'s own comment
+  already defers auth there).
+
+### Measured runs
+
+One real run against the compose stack; `ttl-distinct` and `scheduled-runs`
+vary run to run by construction (jittered TTLs, wall-clock scheduler ticks)
+— the acceptance thresholds (`>= 5`, `>= 2`) are what's actually checked,
+not these exact values.
+
+| Demo             | Output                                                                                             | Exit |
+| ---------------- | -------------------------------------------------------------------------------------------------- | ---- |
+| `demo:cache`     | `cache-lru=1 cache-maxmemory=1 warmed=50 ttl-distinct=35 concurrent=20 db-calls=1 db-calls-warm=0` | 0    |
+| `demo:session`   | `requests=4 sessions=1 in-redis=1 ttl-renewed=1`                                                   | 0    |
+| `demo:ratelimit` | `instances=2 limit=5 requests=16 allowed=5 blocked=11 status=429 retry-after=1`                    | 0    |
+| `demo:queue`     | `queue-noeviction=1 attempts=3 completed=1 added=2 queued=1 schedulers=1 scheduled-runs=8`         | 0    |
+
+### Running the demos
+
+```bash
+npm run demo:cache
+npm run demo:session
+npm run demo:ratelimit
+npm run demo:queue
+```
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -1739,6 +1864,8 @@ Fresh clone, clean DB, no vault access. Run the setup first, then the section yo
 docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
+export REDIS_URL=redis://127.0.0.1:6379
+export REDIS_QUEUE_URL=redis://127.0.0.1:6380
 export SKIP_VAULT=1
 ```
 
@@ -1768,6 +1895,20 @@ npm run demo:crash-write
 npm run demo:crash-relay
 ```
 
+### HW #23 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:cache
+npm run demo:session
+npm run demo:ratelimit
+npm run demo:queue
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -1792,6 +1933,10 @@ npm run demo:duplicate
 npm run demo:outbox
 npm run demo:crash-write
 npm run demo:crash-relay
+npm run demo:cache
+npm run demo:session
+npm run demo:ratelimit
+npm run demo:queue
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

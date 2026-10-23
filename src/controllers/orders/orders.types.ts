@@ -50,3 +50,22 @@ export interface OrderPlacedSource {
   occurredAt: Date;
   items: OrderItem[];
 }
+
+// The wire contract for order.status_changed (BullMQ webhook, HW #23).
+// Same event-contract discipline as OrderPlacedEvent: consumers read
+// exactly this shape, not an ORM entity spread.
+export interface OrderStatusChangedEvent {
+  eventId: string;
+  type: 'order.status_changed';
+  occurredAt: string;
+  data: {
+    orderId: number;
+    status: OrderStatus;
+  };
+}
+
+export interface OrderStatusChangedSource {
+  orderId: number;
+  status: OrderStatus;
+  occurredAt: Date;
+}

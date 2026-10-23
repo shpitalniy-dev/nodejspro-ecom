@@ -8,8 +8,8 @@ import path from 'node:path';
 import type { DataSource } from 'typeorm';
 
 import { validateWorker } from '../../../config/env.schema.ts';
-import { OrderEventPublisher } from '../../../controllers/orders/orders.publisher.ts';
 import {
+  buildOrderPlaced,
   ORDER_RELATIONS,
   toApiOrder,
 } from '../../../controllers/orders/orders.utils.ts';
@@ -17,6 +17,7 @@ import { Inventory } from '../../../entities/inventory.entity.ts';
 import { Order } from '../../../entities/order.entity.ts';
 import { Product } from '../../../entities/product.entity.ts';
 import { User } from '../../../entities/user.entity.ts';
+import type { PublishableEvent } from '../../../services/outbox/outbox.types.ts';
 import { connectBroker } from '../../../services/rabbitmq/rabbitmq.connection.ts';
 import { RabbitMqService } from '../../../services/rabbitmq/rabbitmq.service.ts';
 import {
@@ -24,6 +25,7 @@ import {
   QUEUE,
   resetTopology,
 } from '../../../services/rabbitmq/rabbitmq.topology.ts';
+import { RabbitMqPublisher } from '../../../services/rabbitmq/rabbitmq-publisher.service.ts';
 import { checkout } from '../../../transactions/checkout.ts';
 import { waitUntil } from '../../../utils/wait-until.ts';
 import type { WorkerEvent } from '../fulfillment.events.ts';
@@ -84,7 +86,7 @@ export async function resetDemoFixtures(
 // publish is logged and left out of the result, so the caller can count it.
 export async function publishOrders(
   dataSource: DataSource,
-  publisher: OrderEventPublisher,
+  publisher: RabbitMqPublisher,
   buyerId: number,
   count: number,
 ): Promise<number[]> {
@@ -101,7 +103,9 @@ export async function publishOrders(
     });
 
     try {
-      await publisher.publishOrderPlaced(toApiOrder(entity));
+      await publisher.publish(
+        buildOrderPlaced(toApiOrder(entity)) as unknown as PublishableEvent,
+      );
       orderIds.push(orderId);
     } catch (error) {
       console.error(`publish failed for order ${orderId}:`, error);
@@ -128,7 +132,7 @@ export async function countFulfillments(
 // connection, no HTTP and no worker.
 @Module({
   imports: [ConfigModule.forRoot({ isGlobal: true, validate: validateWorker })],
-  providers: [RabbitMqService, OrderEventPublisher],
+  providers: [RabbitMqService, RabbitMqPublisher],
 })
 export class DemoPublisherModule {}
 

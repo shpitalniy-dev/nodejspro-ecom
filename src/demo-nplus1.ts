@@ -1,11 +1,11 @@
 import 'reflect-metadata';
 
-import type { Logger } from 'typeorm';
 import { DataSource } from 'typeorm';
 
 import { Order } from './entities/order.entity.ts';
 import { OrderItem } from './entities/order-item.entity.ts';
 import { Product } from './entities/product.entity.ts';
+import { QueryCountLogger } from './utils/query-count-logger.ts';
 import { dataSourceOptions } from './data-source.ts';
 
 // N+1, demonstrated on the real graph: orders -> order_items -> products.
@@ -30,20 +30,6 @@ function parseSizes(args: string[]): number[] {
 
     return n;
   });
-}
-
-class QueryCountLogger implements Logger {
-  count = 0;
-
-  logQuery(): void {
-    this.count++;
-  }
-
-  logQueryError(): void {}
-  logQuerySlow(): void {}
-  logSchemaBuild(): void {}
-  logMigration(): void {}
-  log(): void {}
 }
 
 // Result shape of the loadRelationIdAndMap() query below — it adds

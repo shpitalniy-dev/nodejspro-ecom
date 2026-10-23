@@ -1,56 +1,36 @@
 import { Injectable } from '@nestjs/common';
-import type { EntityManager } from 'typeorm';
 
-import { OrderEventPublisher } from '../../controllers/orders/orders.publisher.ts';
-import type { OrderPlacedEvent } from '../../controllers/orders/orders.types.ts';
+import { BullMqPublisher } from '../../services/bullmq/bullmq-publisher.service.ts';
+import type { PublishableEvent } from '../../services/outbox/outbox.types.ts';
+import { OutboxRelayService } from '../../services/outbox/outbox-relay.service.ts';
+import { RabbitMqPublisher } from '../../services/rabbitmq/rabbitmq-publisher.service.ts';
 
-export const DEFAULT_BATCH_SIZE = 20;
-
-interface ClaimedRow {
-  id: string;
-  payload: OrderPlacedEvent;
-}
-
-export class DemoRelayCrashError extends Error {
-  constructor() {
-    super('demo:crash-relay forced interruption between publish and UPDATE');
-    this.name = 'DemoRelayCrashError';
-  }
-}
+export {
+  DEFAULT_BATCH_SIZE,
+  DemoRelayCrashError,
+} from '../../services/outbox/outbox-relay.service.ts';
 
 @Injectable()
-export class RelayService {
-  constructor(private readonly publisher: OrderEventPublisher) {}
+export class RelayService extends OutboxRelayService {
+  constructor(
+    private readonly rabbitMqPublisher: RabbitMqPublisher,
+    private readonly bullMqPublisher: BullMqPublisher,
+  ) {
+    super(['order.placed', 'order.status_changed']);
+  }
 
-  async relayBatch(
-    manager: EntityManager,
-    batchSize: number = DEFAULT_BATCH_SIZE,
-  ): Promise<number> {
-    return manager.transaction(async tx => {
-      const rows: ClaimedRow[] = await tx.query(
-        `SELECT id, payload FROM outbox
-         WHERE published_at IS NULL
-         ORDER BY created_at, id
-         FOR UPDATE SKIP LOCKED
-         LIMIT $1`,
-        [batchSize],
-      );
+  protected async deliver(payload: Record<string, unknown>): Promise<void> {
+    const event = payload as PublishableEvent;
 
-      for (const row of rows) {
-        await this.publisher.publish(row.payload);
-
-        if (process.env.DEMO_CRASH_AFTER_PUBLISH === '1') {
-          throw new DemoRelayCrashError();
-        }
-
-        await tx.query(
-          `UPDATE outbox SET published_at = now(), attempts = attempts + 1
-           WHERE id = $1`,
-          [row.id],
-        );
-      }
-
-      return rows.length;
-    });
+    switch (event.type) {
+      case 'order.placed':
+        await this.rabbitMqPublisher.publish(event);
+        break;
+      case 'order.status_changed':
+        await this.bullMqPublisher.publish(event);
+        break;
+      default:
+        throw new Error(`RelayService: unhandled event type "${event.type}"`);
+    }
   }
 }

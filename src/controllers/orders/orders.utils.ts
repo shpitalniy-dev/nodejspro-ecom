@@ -10,6 +10,8 @@ import type {
   Order,
   OrderPlacedEvent,
   OrderPlacedSource,
+  OrderStatusChangedEvent,
+  OrderStatusChangedSource,
 } from './orders.types.ts';
 
 // user: true added for HW#18 — the WS gateway's ownership check and
@@ -100,4 +102,33 @@ export function buildOrderPlaced(order: Order): OrderPlacedEvent {
     occurredAt: new Date(order.created_at),
     items: order.items,
   });
+}
+
+// The wire contract for order.status_changed (BullMQ webhook, HW #23) —
+// same discipline as orderPlacedSchema: the webhook consumer's defensive
+// parse is typed against this, so the runtime check and the type cannot
+// drift apart.
+export const orderStatusChangedSchema: z.ZodType<OrderStatusChangedEvent> =
+  z.object({
+    eventId: z.uuid(),
+    type: z.literal('order.status_changed'),
+    occurredAt: z.iso.datetime(),
+    data: z.object({
+      orderId: z.number().int().positive(),
+      status: z.enum(['unpaid', 'pending', 'paid', 'refunded']),
+    }),
+  });
+
+export function toOrderStatusChangedEvent(
+  source: OrderStatusChangedSource,
+): OrderStatusChangedEvent {
+  return {
+    eventId: randomUUID(),
+    type: 'order.status_changed',
+    occurredAt: source.occurredAt.toISOString(),
+    data: {
+      orderId: source.orderId,
+      status: source.status,
+    },
+  };
 }
