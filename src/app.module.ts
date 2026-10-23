@@ -17,6 +17,7 @@ import { CacheAsideService } from './services/cache/cache-aside.service.ts';
 import { DataSourceService } from './services/data-source.service.ts';
 import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
+import { LoggerService } from './services/logger.service.ts';
 import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
 import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
 import { CacheRedisConnection } from './services/redis/cache-redis-connection.service.ts';
@@ -36,14 +37,15 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     DatabaseService,
     DataSourceService,
     RabbitMqService,
+    LoggerService,
     CacheRedisConnection,
     QueueRedisConnection,
     ProductsListRateLimitGuard,
     {
       provide: CacheAsideService,
-      useFactory: async (conn: CacheRedisConnection) =>
-        new CacheAsideService(await conn.getClient()),
-      inject: [CacheRedisConnection],
+      useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>
+        new CacheAsideService(await conn.getClient(), logger),
+      inject: [CacheRedisConnection, LoggerService],
     },
     {
       provide: TokenBucketService,

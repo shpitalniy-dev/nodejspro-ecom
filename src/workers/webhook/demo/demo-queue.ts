@@ -72,7 +72,7 @@ async function main(): Promise<void> {
       {
         jobId: retryJobId,
         attempts: 3,
-        backoff: { type: 'exponential', delay: 200 },
+        backoff: { type: 'exponential', delay: 200, jitter: 0.5 },
       },
     );
     await waitUntil(async () => completed === 1, 20_000);

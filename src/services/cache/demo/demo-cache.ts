@@ -14,6 +14,7 @@ import { Inventory } from '../../../entities/inventory.entity.ts';
 import { Product as ProductEntity } from '../../../entities/product.entity.ts';
 import { QueryCountLogger } from '../../../utils/query-count-logger.ts';
 import { requireEnv } from '../../../utils/require-env.ts';
+import { LoggerService } from '../../logger.service.ts';
 import { CacheAsideService } from '../cache-aside.service.ts';
 
 // demo:cache — cache-aside with jittered TTL + single-flight stampede lock
@@ -82,17 +83,18 @@ async function loadProduct(
 }
 
 async function main(): Promise<void> {
-  const logger = new QueryCountLogger();
+  const queryLogger = new QueryCountLogger();
   const ds = new DataSource({
     ...dataSourceOptions,
     logging: ['query'],
-    logger,
+    logger: queryLogger,
   });
 
   await ds.initialize();
 
   const redis = new Redis(requireEnv('REDIS_URL'));
-  const cacheAside = new CacheAsideService(redis);
+  const errorLogger = new LoggerService();
+  const cacheAside = new CacheAsideService(redis, errorLogger);
 
   try {
     const demoProducts = await seedDemoProducts(ds);
@@ -154,7 +156,7 @@ async function main(): Promise<void> {
     );
     await redis.del(stampedeKey);
 
-    logger.count = 0;
+    queryLogger.count = 0;
     await Promise.all(
       Array.from({ length: CONCURRENT }, () =>
         cacheAside.getOrLoad<Product | null>(
@@ -164,10 +166,10 @@ async function main(): Promise<void> {
         ),
       ),
     );
-    const dbCalls = logger.count;
+    const dbCalls = queryLogger.count;
 
     // Phase D — the cache is warm again: further reads must cost nothing.
-    logger.count = 0;
+    queryLogger.count = 0;
     await Promise.all(
       Array.from({ length: WARM_READ_COUNT }, () =>
         cacheAside.getOrLoad<Product | null>(
@@ -177,7 +179,7 @@ async function main(): Promise<void> {
         ),
       ),
     );
-    const dbCallsWarm = logger.count;
+    const dbCallsWarm = queryLogger.count;
 
     console.log(`cache-lru=${cacheLru}`);
     console.log(`cache-maxmemory=${cacheMaxmemory}`);
