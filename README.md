@@ -1854,6 +1854,72 @@ npm run demo:ratelimit
 npm run demo:queue
 ```
 
+## Authentication | HW #24
+
+**Key decisions:**
+
+- **ES256**, not RS256 — OWASP recommends it; `verify()` passes an explicit
+  `algorithms: ['ES256']` allowlist (RFC 8725 §3.1), never read from the
+  token's own header.
+- **Argon2id via `@node-rs/argon2`**, not `argon2` (ranisalt) — the latter
+  needs an install script to fetch its native binary, which this repo's
+  `Dockerfile` (`npm ci --ignore-scripts`) would break. Params
+  (`memoryCost: 19456, timeCost: 2, parallelism: 1`, an OWASP tuple) are
+  explicit, not left at the library default.
+- **Concurrent-hash memory is bounded two ways**: `LoginRateLimitGuard`
+  (per-client, brute-force protection) and `PasswordService`'s own
+  `ConcurrencyLimiter` (global cap on in-flight hashes — 24 concurrent ×
+  19 MiB stays under the `api` container's 1G limit; a full queue rejects
+  rather than growing forever). Both return `429`.
+- **Denylist in Redis (`redis-queue`), not Postgres** — the homework
+  allows either. Redis wins here for one concrete reason: a TTL-keyed
+  entry expires itself for free, so the denylist's size is bounded by TTL
+  alone, never by how many tokens were ever issued — in Postgres that's a
+  column plus a cleanup job to build by hand. The tradeoff this creates is
+  the same dual-write shape HW #22 already covers (write to one store,
+  effect in another, no cross-store transaction) — accepted here because,
+  unlike a lost outbox event, the failure mode is bounded and self-healing:
+  a missed denylist write just means the token lives out its own already-
+  short remaining TTL, not a permanent loss.
+- **`/me` re-reads the DB**, not the token's `role` claim — a role can
+  change after the token was issued, and this is the one endpoint whose
+  job is to report the truth.
+
+### Environment variables
+
+| Variable          | Джерело       | Навіщо                                   |
+| ----------------- | ------------- | ---------------------------------------- |
+| `JWT_KID`         | сховище (#11) | key id in the token header, not a secret |
+| `JWT_PRIVATE_KEY` | сховище (#11) | signs access tokens (base64 PKCS#8 PEM)  |
+| `JWT_PUBLIC_KEY`  | сховище (#11) | verifies access tokens (base64 SPKI PEM) |
+
+### Generating a dev key pair
+
+```bash
+node -e "
+const { generateKeyPairSync, randomBytes } = require('node:crypto');
+const { privateKey, publicKey } = generateKeyPairSync('ec', {
+  namedCurve: 'P-256',
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+});
+console.log('JWT_KID=k' + randomBytes(2).toString('hex'));
+console.log('JWT_PRIVATE_KEY=' + Buffer.from(privateKey).toString('base64'));
+console.log('JWT_PUBLIC_KEY=' + Buffer.from(publicKey).toString('base64'));
+" >> .env
+```
+
+For RS256: `generateKeyPairSync('rsa', { modulusLength: 2048, ... })` — same
+encoding either way, PKCS#8/SPKI aren't algorithm-specific.
+
+**Measured run:** `login=200 no-token=401 with-token=200 logout=204 after-logout=401`, exit 0.
+
+### Running the demo
+
+```bash
+npm run demo:auth
+```
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -1867,6 +1933,22 @@ export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export REDIS_URL=redis://127.0.0.1:6379
 export REDIS_QUEUE_URL=redis://127.0.0.1:6380
 export SKIP_VAULT=1
+
+# one-time ES256 pair for this run — see Authentication | HW #24's own
+# "Generating a dev key pair" for what each line does
+node -e "
+const { generateKeyPairSync } = require('node:crypto');
+const k = generateKeyPairSync('ec', {
+  namedCurve: 'P-256',
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+});
+require('node:fs').writeFileSync('/tmp/jwt-priv.b64', Buffer.from(k.privateKey).toString('base64'));
+require('node:fs').writeFileSync('/tmp/jwt-pub.b64', Buffer.from(k.publicKey).toString('base64'));
+"
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 ```
 
 ### HW #19 commands
@@ -1909,6 +1991,17 @@ npm run demo:ratelimit
 npm run demo:queue
 ```
 
+### HW #24 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:auth
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -1937,6 +2030,7 @@ npm run demo:cache
 npm run demo:session
 npm run demo:ratelimit
 npm run demo:queue
+npm run demo:auth
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

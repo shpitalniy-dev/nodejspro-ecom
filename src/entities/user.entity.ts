@@ -45,6 +45,12 @@ export class User {
   @Column({ name: 'balance_cents', type: 'bigint', default: 0 })
   balanceCents!: string;
 
+  // HW #24 — argon2id PHC string, null for every seed user except the demo
+  // buyer (see seed.ts). Never selected into an API response; only
+  // AuthService reads it.
+  @Column({ name: 'password_hash', type: 'text', nullable: true })
+  passwordHash!: string | null;
+
   @CreateDateColumn({ name: 'created_at', type: 'timestamptz' })
   createdAt!: Date;
 
