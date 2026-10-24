@@ -2,6 +2,7 @@ import 'reflect-metadata';
 
 import type { EntityManager } from 'typeorm';
 
+import { PasswordService } from './controllers/auth/password.service.ts';
 import type { FulfillmentStatus } from './entities/fulfillment.entity.ts';
 import { Fulfillment } from './entities/fulfillment.entity.ts';
 import { Inventory } from './entities/inventory.entity.ts';
@@ -11,8 +12,16 @@ import { OrderItem } from './entities/order-item.entity.ts';
 import { Product } from './entities/product.entity.ts';
 import type { UserRole } from './entities/user.entity.ts';
 import { User } from './entities/user.entity.ts';
+import { ConcurrencyLimiter } from './services/concurrency-limiter.ts';
 import { mustGet } from './utils/must-get.ts';
 import { AppDataSource } from './data-source.ts';
+
+// Duplicated (not imported) in demo-auth.ts, same precedent
+// DEMO_BUYER_EMAIL already set in workers/fulfillment/demo/demo.utils.ts —
+// a demo script is allowed to know this fixture's shape without the core
+// seed script importing back from a demo folder.
+export const DEMO_BUYER_EMAIL = 'demo-buyer@seed.example';
+export const DEMO_BUYER_PASSWORD = 'demo-buyer-password-1';
 
 // Deterministic fixtures — fixed UUIDs / keys / prices, no random(), no
 // Date.now(). Idempotent: every table is inserted with ON CONFLICT DO
@@ -108,7 +117,7 @@ const USERS: Array<{
   {
     uuid: '10000000-0000-4000-8000-000000000009',
     name: 'Demo Buyer',
-    email: 'demo-buyer@seed.example',
+    email: DEMO_BUYER_EMAIL,
     role: 'user',
     balanceCents: '100000',
   },
@@ -259,6 +268,23 @@ async function run(m: EntityManager): Promise<Inserted> {
   const userByEmail = new Map(
     (await m.getRepository(User).find()).map(u => [u.email, u]),
   );
+
+  // HW #24 — the only seed user that needs a real password, so demo:auth
+  // has a real account to log in as. Guarded by the existing hash being
+  // null (not re-hashed every reseed — argon2id is deliberately slow, and
+  // `.orIgnore()` above already means this row is otherwise untouched on a
+  // rerun).
+  const demoBuyer = mustGet(userByEmail, DEMO_BUYER_EMAIL);
+
+  if (!demoBuyer.passwordHash) {
+    // Plain script, no Nest DI container — same precedent demo-cache.ts
+    // already sets for constructing a service directly outside it.
+    const passwordHash = await new PasswordService(
+      new ConcurrencyLimiter(),
+    ).hash(DEMO_BUYER_PASSWORD);
+
+    await m.getRepository(User).update(demoBuyer.id, { passwordHash });
+  }
 
   const inventory = await m
     .createQueryBuilder()

@@ -2,6 +2,16 @@ import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 
 import { validate } from './config/env.schema.ts';
+import { JwtKeysService } from './config/jwt-keys.ts';
+import { AccessDenylistService } from './controllers/auth/access-denylist.service.ts';
+import { AccessTokenService } from './controllers/auth/access-token.service.ts';
+import { AuthController } from './controllers/auth/auth.controller.ts';
+import {
+  AuthGuard,
+  LoginRateLimitGuard,
+} from './controllers/auth/auth.guards.ts';
+import { AuthService } from './controllers/auth/auth.service.ts';
+import { PasswordService } from './controllers/auth/password.service.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
 import { OrderEventsService } from './controllers/orders/order-events.service.ts';
 import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
@@ -14,6 +24,7 @@ import { ProductsService } from './controllers/products/products.service.ts';
 import { IdempotencyKeyInterceptor } from './interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from './interceptors/location-header.interceptor.ts';
 import { CacheAsideService } from './services/cache/cache-aside.service.ts';
+import { ConcurrencyLimiter } from './services/concurrency-limiter.ts';
 import { DataSourceService } from './services/data-source.service.ts';
 import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
@@ -24,7 +35,12 @@ import { CacheRedisConnection } from './services/redis/cache-redis-connection.se
 import { QueueRedisConnection } from './services/redis/queue-redis-connection.service.ts';
 
 @Module({
-  controllers: [HealthController, ProductsController, OrdersController],
+  controllers: [
+    HealthController,
+    ProductsController,
+    OrdersController,
+    AuthController,
+  ],
   providers: [
     ProductsService,
     OrdersService,
@@ -41,6 +57,13 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     CacheRedisConnection,
     QueueRedisConnection,
     ProductsListRateLimitGuard,
+    JwtKeysService,
+    ConcurrencyLimiter,
+    PasswordService,
+    AccessTokenService,
+    AuthService,
+    AuthGuard,
+    LoginRateLimitGuard,
     {
       provide: CacheAsideService,
       useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>
@@ -51,6 +74,12 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
       provide: TokenBucketService,
       useFactory: async (conn: QueueRedisConnection) =>
         new TokenBucketService(await conn.getClient()),
+      inject: [QueueRedisConnection],
+    },
+    {
+      provide: AccessDenylistService,
+      useFactory: async (conn: QueueRedisConnection) =>
+        new AccessDenylistService(await conn.getClient()),
       inject: [QueueRedisConnection],
     },
   ],
