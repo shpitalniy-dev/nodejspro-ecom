@@ -2,6 +2,7 @@ import type { INestApplication } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Test } from '@nestjs/testing';
 import type { StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+import { generateKeyPairSync, randomBytes } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -44,6 +45,21 @@ export async function startTestApp(
   // CI — so this needs a real, reachable container, not a placeholder.
   process.env.REDIS_URL = redis.url;
   process.env.REDIS_QUEUE_URL = redis.url;
+
+  // JwtKeysService decodes these in its constructor, during module
+  // compile below — not lazily on first login — so they must be a real
+  // ES256 keypair, not a placeholder string (HW #24). One-off per test
+  // run, same generation the README's own "Generating a dev key pair"
+  // documents for a human.
+  const { privateKey, publicKey } = generateKeyPairSync('ec', {
+    namedCurve: 'P-256',
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+  });
+  process.env.JWT_KID = 'e2e-test-kid';
+  process.env.JWT_PRIVATE_KEY = Buffer.from(privateKey).toString('base64');
+  process.env.JWT_PUBLIC_KEY = Buffer.from(publicKey).toString('base64');
+  process.env.REFRESH_TOKEN_PEPPER = randomBytes(32).toString('base64');
 
   const passwordFile = path.join(os.tmpdir(), `e2e-db-password-${process.pid}`);
 
