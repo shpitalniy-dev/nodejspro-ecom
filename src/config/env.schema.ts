@@ -41,6 +41,11 @@ export const envSchema = z.object({
   JWT_KID: z.string().min(1),
   JWT_PRIVATE_KEY: z.string().min(1),
   JWT_PUBLIC_KEY: z.string().min(1),
+  // Refresh-token hashing (HW #24). Mixed into the HMAC alongside the
+  // presented token before it's compared to the stored hash — kept outside
+  // the database specifically so a DB dump alone can't be used to forge or
+  // verify a refresh token. Base64 of >=32 random bytes.
+  REFRESH_TOKEN_PEPPER: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;

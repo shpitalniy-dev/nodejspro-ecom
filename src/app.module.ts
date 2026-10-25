@@ -12,6 +12,8 @@ import {
 } from './controllers/auth/auth.guards.ts';
 import { AuthService } from './controllers/auth/auth.service.ts';
 import { PasswordService } from './controllers/auth/password.service.ts';
+import { RefreshGraceCacheService } from './controllers/auth/refresh-grace-cache.service.ts';
+import { RefreshTokenService } from './controllers/auth/refresh-token.service.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
 import { OrderEventsService } from './controllers/orders/order-events.service.ts';
 import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
@@ -61,6 +63,7 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     ConcurrencyLimiter,
     PasswordService,
     AccessTokenService,
+    RefreshTokenService,
     AuthService,
     AuthGuard,
     LoginRateLimitGuard,
@@ -80,6 +83,12 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
       provide: AccessDenylistService,
       useFactory: async (conn: QueueRedisConnection) =>
         new AccessDenylistService(await conn.getClient()),
+      inject: [QueueRedisConnection],
+    },
+    {
+      provide: RefreshGraceCacheService,
+      useFactory: async (conn: QueueRedisConnection) =>
+        new RefreshGraceCacheService(await conn.getClient()),
       inject: [QueueRedisConnection],
     },
   ],

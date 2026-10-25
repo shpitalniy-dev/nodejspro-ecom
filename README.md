@@ -1884,14 +1884,36 @@ npm run demo:queue
 - **`/me` re-reads the DB**, not the token's `role` claim — a role can
   change after the token was issued, and this is the one endpoint whose
   job is to report the truth.
+- **Refresh rotation, slice 2**: `family_id` is a fresh UUID per _login_,
+  independent of `user_id` — one compromised device's reuse detection
+  revokes only that chain, not every session the user has. Idle TTL 7
+  days (reset on each rotation), absolute TTL 30 days (never extended, so
+  an endlessly-active chain still can't outlive it — RFC 9700 §4.14.2).
+  Hashed with HMAC-SHA256 + a vault pepper (`REFRESH_TOKEN_PEPPER`), not
+  bare SHA-256 or `sha256(pepper+token)` — the latter is
+  length-extension-vulnerable; HMAC's two-pass construction is what
+  actually closes that.
+- **Winner-takes-claim needs no explicit lock** — a single conditional
+  `UPDATE ... WHERE used_at IS NULL RETURNING id` already gives
+  exactly-one-winner semantics under Postgres's default `READ COMMITTED`.
+  A loser within a 3s grace window gets the winner's already-minted pair
+  back (cached in Redis, not regenerated — there's nothing to regenerate
+  from); a loser outside it is genuine reuse, which revokes the _whole_
+  family, including whatever the winner just issued one step ahead — that
+  last part is what actually proves detection fired, not just rotation.
+- **Refresh token lives only in a cookie** — `__Host-rt`, `httpOnly`,
+  `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
+  prefix itself — the browser silently refuses the cookie otherwise).
+  Never in a response body or a log line.
 
 ### Environment variables
 
-| Variable          | Джерело       | Навіщо                                   |
-| ----------------- | ------------- | ---------------------------------------- |
-| `JWT_KID`         | сховище (#11) | key id in the token header, not a secret |
-| `JWT_PRIVATE_KEY` | сховище (#11) | signs access tokens (base64 PKCS#8 PEM)  |
-| `JWT_PUBLIC_KEY`  | сховище (#11) | verifies access tokens (base64 SPKI PEM) |
+| Variable               | Джерело       | Навіщо                                   |
+| ---------------------- | ------------- | ---------------------------------------- |
+| `JWT_KID`              | сховище (#11) | key id in the token header, not a secret |
+| `JWT_PRIVATE_KEY`      | сховище (#11) | signs access tokens (base64 PKCS#8 PEM)  |
+| `JWT_PUBLIC_KEY`       | сховище (#11) | verifies access tokens (base64 SPKI PEM) |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | HMAC pepper for refresh-token hashes     |
 
 ### Generating a dev key pair
 
@@ -1912,12 +1934,24 @@ console.log('JWT_PUBLIC_KEY=' + Buffer.from(publicKey).toString('base64'));
 For RS256: `generateKeyPairSync('rsa', { modulusLength: 2048, ... })` — same
 encoding either way, PKCS#8/SPKI aren't algorithm-specific.
 
-**Measured run:** `login=200 no-token=401 with-token=200 logout=204 after-logout=401`, exit 0.
+`REFRESH_TOKEN_PEPPER` the same way — any 32+ random bytes, base64:
 
-### Running the demo
+```bash
+node -e "console.log('REFRESH_TOKEN_PEPPER=' + require('node:crypto').randomBytes(32).toString('base64'))" >> .env
+```
+
+### Measured runs
+
+| Demo         | Output                                                                                  | Exit |
+| ------------ | --------------------------------------------------------------------------------------- | ---- |
+| `demo:auth`  | `login=200 no-token=401 with-token=200 refresh=200 logout=204 refresh-after-logout=401` | 0    |
+| `demo:reuse` | `login=200 r1-refresh=200 r1-reuse=401 r2-after-reuse=401`                              | 0    |
+
+### Running the demos
 
 ```bash
 npm run demo:auth
+npm run demo:reuse
 ```
 
 ## Grading
@@ -1949,6 +1983,7 @@ require('node:fs').writeFileSync('/tmp/jwt-pub.b64', Buffer.from(k.publicKey).to
 export JWT_KID=grader
 export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
+export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
 ```
 
 ### HW #19 commands
@@ -2000,6 +2035,7 @@ npm run build
 npm run migrate
 npm run seed
 npm run demo:auth
+npm run demo:reuse
 ```
 
 ### Cumulative commands
@@ -2031,6 +2067,7 @@ npm run demo:session
 npm run demo:ratelimit
 npm run demo:queue
 npm run demo:auth
+npm run demo:reuse
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

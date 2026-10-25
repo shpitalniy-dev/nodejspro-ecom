@@ -24,4 +24,21 @@ export type VerifyResult =
 
 export interface LoginResult extends IssuedAccessToken {
   expiresIn: number;
+  refreshToken: string;
 }
+
+export interface IssuedRefreshToken {
+  token: string;
+}
+
+export interface RotatedRefreshToken {
+  refreshToken: string;
+  userId: number;
+}
+
+export type RotateResult =
+  | { status: 'ok'; result: RotatedRefreshToken }
+  | { status: 'unknown' }
+  | { status: 'revoked' }
+  | { status: 'reuse' }
+  | { status: 'expired'; kind: 'idle' | 'absolute' };

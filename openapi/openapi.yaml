@@ -251,11 +251,11 @@ paths:
       operationId: login
       summary: Log in and receive an access token
       description: >
-        HW #24, slice 1: access-token only — no refresh token yet (see
-        README's Auth section). LoginRateLimitGuard and PasswordService's
-        own ConcurrencyLimiter both guard this route against the memory
-        cost of concurrent argon2id password verification; either one
-        tripping returns the same 429 below.
+        Also sets the __Host-rt refresh cookie (httpOnly, Secure,
+        SameSite=Strict — see README's Auth section). LoginRateLimitGuard
+        and PasswordService's own ConcurrencyLimiter both guard this route
+        against the memory cost of concurrent argon2id password
+        verification; either one tripping returns the same 429 below.
       tags:
         - auth
       requestBody:
@@ -299,6 +299,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Rotate the refresh token and issue a new access token
+      description: >
+        No request body — reads the __Host-rt cookie. Every rejection
+        (unknown, expired, already-revoked, or reused token) returns the
+        same 401 and clears the cookie; a reused token additionally
+        revokes its whole family server-side (see README's Auth section),
+        not just itself, which is what also invalidates whatever token the
+        legitimate client was issued one rotation ahead.
+      tags:
+        - auth
+      responses:
+        '200':
+          description: New access token issued; __Host-rt cookie rotated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: >
+            Missing, unknown, expired, revoked, or reused refresh token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
   /auth/me:
     get:
       operationId: getCurrentUser
@@ -330,12 +358,13 @@ paths:
   /auth/logout:
     post:
       operationId: logout
-      summary: Log out, denylisting the current access token
+      summary: Log out — denylists the access token and revokes the refresh family
       description: >
-        Denylists the token's jti for its own remaining TTL (best-effort —
-        see AccessDenylistService's own comment on why a Redis failure here
-        doesn't fail the request). No refresh-family revocation yet in this
-        slice.
+        Two actions: denylists the access token's jti for its own
+        remaining TTL (best-effort — see AccessDenylistService's own
+        comment on why a Redis failure here doesn't fail the request), and
+        revokes the __Host-rt cookie's refresh family if the cookie is
+        present. The cookie is cleared either way.
       tags:
         - auth
       security:

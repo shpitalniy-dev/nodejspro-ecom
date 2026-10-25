@@ -1,5 +1,6 @@
 import { ValidationPipe } from '@nestjs/common';
 import type { NestExpressApplication } from '@nestjs/platform-express';
+import cookieParser from 'cookie-parser';
 import express from 'express';
 import * as OpenApiValidator from 'express-openapi-validator';
 import path from 'node:path';
@@ -13,6 +14,10 @@ import { validationErrorHandler } from './middleware/validation-error-handler.ts
 // handling prod does, not a stripped-down stand-in.
 export function configureApp(app: NestExpressApplication): void {
   app.use(express.json());
+  // Unsigned — the refresh cookie's own value is opaque and HMAC-hashed
+  // server-side before it's ever compared to anything, so a signed-cookie
+  // layer on top wouldn't add a real guarantee here.
+  app.use(cookieParser());
 
   app.use(
     OpenApiValidator.middleware({
