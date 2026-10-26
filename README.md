@@ -1902,6 +1902,25 @@ npm run demo:queue
   `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
   prefix itself — the browser silently refuses the cookie otherwise).
   Never in a response body or a log line.
+- **`kid` and key rotation** — `AccessTokenService.verify()` rejects a
+  token whose header `kid` doesn't match the server's current key id,
+  the same way it rejects a bad signature, rather than silently
+  accepting any key that happens to verify. This repo keeps exactly
+  one active key pair (no multi-key verification registry), so
+  rotating `JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY` invalidates
+  every outstanding access token immediately — bounded by their own
+  10-minute TTL, not an open-ended outage. Refresh tokens are
+  unaffected by a rotation at all (they're opaque and hash-stored,
+  never signed), so the real user-facing cost of rotating the signing
+  key is at most one early refresh, not a forced re-login. Fingerprint
+  (SHA-256 of the SPKI-encoded public key), to prove dev and prod
+  genuinely use different keys rather than one key copied between
+  environments:
+  ```bash
+  echo "$JWT_PUBLIC_KEY" | base64 -d | openssl pkey -pubin -outform DER | openssl dgst -sha256
+  ```
+  Dev: `<run the command above against the dev vault's JWT_PUBLIC_KEY and paste the digest>`
+  Prod: `<same command against the prod vault — the two digests must differ>`
 - **Plain NestJS guards, not Zanzibar/ReBAC** — the bonus task's
   suggestion was considered and set aside: both cases below are a
   single boolean check against a row already in hand (order
@@ -1921,6 +1940,28 @@ npm run demo:queue
   e2e tests; that's real scope for a later pass, not this one. The WS
   `join` path (realtime order-status rooms) is unchanged for the same
   reason it always was: no socket handshake auth exists yet.
+  **Where the ownership check actually lives**: in `OrdersController`,
+  after `OrdersService.findByIdForOwner()` has already loaded the
+  order — not in a guard. A guard runs before the resource is loaded,
+  so a generic ownership guard would have nothing to compare against
+  without a lookup of its own, meaning the same order gets queried
+  twice per request: once for the guard's check, once for the
+  handler's response. `findByIdForOwner()` is the one query `getOne()`
+  needed anyway (it already joins `user` to build the response's
+  `user_id` field); it just also hands back that same row's owner
+  `uuid`, so the 403/200 decision costs nothing beyond the load the
+  handler was always going to do. This mirrors how other frameworks
+  split the same concern — Django REST Framework's
+  `has_object_permission` runs after the object is fetched for exactly
+  this reason, and ASP.NET Core's resource-based authorization is
+  explicitly checked in the handler, not in middleware. `AuthGuard` and
+  `RolesGuard` stay guards because neither needs resource-specific
+  data to decide anything — only ownership does, which is what puts it
+  on the other side of that line. The SSE `events` route and the WS
+  `join` path still use a guard (`OrderOwnershipGuard`) for this,
+  because neither of them loads a response body in the first place —
+  there's no already-in-hand query to reuse there, so a guard's own
+  lookup is the cheapest option available to them.
 - **Admin-only product update (`PATCH /products/:productId`)** — only
   `role: 'admin'` may change a product's price. `RolesGuard` checks the
   access token's own `role` claim **directly, without re-reading the
@@ -1969,11 +2010,11 @@ node -e "console.log('REFRESH_TOKEN_PEPPER=' + require('node:crypto').randomByte
 
 ### Measured runs
 
-| Demo         | Output                                                                                  | Exit |
-| ------------ | --------------------------------------------------------------------------------------- | ---- |
-| `demo:auth`  | `login=200 no-token=401 with-token=200 refresh=200 logout=204 refresh-after-logout=401` | 0    |
-| `demo:reuse` | `login=200 r1-refresh=200 r1-reuse=401 r2-after-reuse=401`                              | 0    |
-| `demo:rbac`  | `anon=401 own=200 foreign=403 role-denied=403 role-allowed=200 tampered=401`            | 0    |
+| Demo         | Output                                                                                                   | Exit |
+| ------------ | -------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:auth`  | `login=200 no-token=401 with-token=200 refresh=200 logout=204 after-logout=401 refresh-after-logout=401` | 0    |
+| `demo:reuse` | `login=200 r1-refresh=200 r1-reuse=401 r2-after-reuse=401`                                               | 0    |
+| `demo:rbac`  | `anon=401 own=200 foreign=403 role-denied=403 role-allowed=200 tampered=401`                             | 0    |
 
 ### Running the demos
 

@@ -49,6 +49,17 @@ async function main(): Promise<void> {
       },
     });
 
+    // Same access token used for logout above, reused after logout
+    // denylisted its jti — this is logout's FIRST action (access-token
+    // denylist), checked separately from refresh-after-logout below
+    // (its SECOND action, family revocation). They're different
+    // mechanisms for a reason: refresh is a DB row, one UPDATE marks it
+    // revoked; access is self-contained and lives until exp, so it needs
+    // the denylist — conflating the two checks would hide a broken one.
+    const afterLogout = await fetch(`${baseUrl}/auth/me`, {
+      headers: { authorization: `Bearer ${accessToken}` },
+    });
+
     // Same refresh cookie, reused after logout revoked its family — this
     // is what actually proves logout's second action fired, not just
     // that the route exists.
@@ -65,6 +76,7 @@ async function main(): Promise<void> {
     console.log(`with-token=${withToken.status}`);
     console.log(`refresh=${refresh.status}`);
     console.log(`logout=${logout.status}`);
+    console.log(`after-logout=${afterLogout.status}`);
     console.log(`refresh-after-logout=${refreshAfterLogout.status}`);
 
     const invariantOk =
@@ -73,6 +85,7 @@ async function main(): Promise<void> {
       withToken.status === 200 &&
       refresh.status === 200 &&
       logout.status === 204 &&
+      afterLogout.status === 401 &&
       refreshAfterLogout.status === 401;
 
     if (invariantOk) {

@@ -17,8 +17,9 @@ import {
 // demo:rbac — HW #24 slice 3: plain NestJS guards (RolesGuard, the fixed
 // OrderOwnershipGuard), no Zanzibar/ReBAC — see README's Authorization
 // section for why that was the right call here. Six checks, matching the
-// homework's own contract: anon, own, foreign, role-denied, role-allowed,
-// tampered.
+// homework's exact contract: anon, own, foreign, role-denied,
+// role-allowed, tampered — the first three are the 401-vs-403 /
+// ownership story, the last three are the role story.
 //
 // POST /orders still attributes every order to the storefront placeholder
 // (deliberately out of scope this slice — see README), so this seeds an
@@ -26,16 +27,25 @@ import {
 // shape the test builders use, rather than creating one through the live
 // endpoint.
 
-// Same token, corrupted signature — the last character of the signature
-// segment is flipped to a fixed, always-different value. Proves
-// verification actually checks the signature, not just that a header and
-// payload exist.
-function tamper(token: string): string {
+// Forges role -> 'admin' in the payload and keeps the OLD signature —
+// exactly the homework's own one-liner, ported to TS. This is the point:
+// a jwt.decode()-based "verifier" never checks the signature at all, so
+// it would happily read role: admin off this forged payload and let the
+// request through (200/201) — only an implementation that actually runs
+// the signature check rejects it (401).
+function forgeAdminRole(token: string): string {
   const [header, payload, signature] = token.split('.');
-  const lastChar = signature.at(-1);
-  const flippedChar = lastChar === 'A' ? 'B' : 'A';
+  const claims = JSON.parse(
+    Buffer.from(payload, 'base64url').toString(),
+  ) as Record<string, unknown>;
 
-  return `${header}.${payload}.${signature.slice(0, -1)}${flippedChar}`;
+  claims.role = 'admin';
+
+  const forgedPayload = Buffer.from(JSON.stringify(claims)).toString(
+    'base64url',
+  );
+
+  return `${header}.${forgedPayload}.${signature}`;
 }
 
 async function accessTokenFor(
@@ -126,11 +136,14 @@ async function main(): Promise<void> {
       body: updateBody,
     });
 
-    // tampered: a structurally valid token whose signature no longer
-    // matches — must fail verification regardless of the (unchanged)
-    // claims it carries.
-    const tampered = await fetch(`${baseUrl}/orders/${order.id}`, {
-      headers: { authorization: `Bearer ${tamper(buyerToken)}` },
+    const tamperedPriceCents = 9999;
+    const tampered = await fetch(`${baseUrl}/products/${product.id}`, {
+      method: 'PATCH',
+      headers: {
+        authorization: `Bearer ${forgeAdminRole(buyerToken)}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ price_cents: tamperedPriceCents }),
     });
 
     const confirmed = (await fetch(`${baseUrl}/products/${product.id}`).then(

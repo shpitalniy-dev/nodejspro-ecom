@@ -19,8 +19,15 @@ interface Identity {
 }
 
 // Pure authorization boundary for both realtime transports: the WS 'join'
-// message and the SSE `GET /orders/:orderId/events` request — plus, since
-// HW#24 slice 3, the plain `GET /orders/:orderId` read.
+// message and the SSE `GET /orders/:orderId/events` request. NOT used by
+// the plain `GET /orders/:orderId` read (HW#24 slice 3 moved that check
+// into OrdersController itself — see getOne()'s own comment on why): a
+// generic guard has no resource to compare against without a lookup of
+// its own, and getOne() already runs the one query it needs regardless,
+// so checking ownership there costs nothing extra. SSE and WS are
+// different — neither loads a response body the way getOne() does, so
+// there's no already-in-hand query to piggyback the owner's identity on;
+// this guard's own lookup (getOwner()) is the cheapest it gets for them.
 //
 // The two transports verify identity very differently, and that's a
 // deliberate, bounded gap, not an oversight: over HTTP, a preceding
