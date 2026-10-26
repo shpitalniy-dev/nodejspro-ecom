@@ -9,6 +9,7 @@ import { AuthController } from './controllers/auth/auth.controller.ts';
 import {
   AuthGuard,
   LoginRateLimitGuard,
+  RolesGuard,
 } from './controllers/auth/auth.guards.ts';
 import { AuthService } from './controllers/auth/auth.service.ts';
 import { PasswordService } from './controllers/auth/password.service.ts';
@@ -67,6 +68,7 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     AuthService,
     AuthGuard,
     LoginRateLimitGuard,
+    RolesGuard,
     {
       provide: CacheAsideService,
       useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>

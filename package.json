@@ -19,6 +19,7 @@
     "demo:queue": "bash scripts/with-secrets.sh dev node build/workers/webhook/demo/demo-queue.js",
     "demo:race": "bash scripts/with-secrets.sh dev node build/transactions/demo-race.js",
     "demo:ratelimit": "bash scripts/with-secrets.sh dev node build/services/rate-limit/demo/demo-rate-limit.js",
+    "demo:rbac": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-rbac.js",
     "demo:realtime": "node scripts/realtime-demo.mjs",
     "demo:retry": "bash scripts/with-secrets.sh dev node build/transactions/demo-retry.js",
     "demo:reuse": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-reuse.js",

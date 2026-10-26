@@ -1881,10 +1881,7 @@ npm run demo:queue
   unlike a lost outbox event, the failure mode is bounded and self-healing:
   a missed denylist write just means the token lives out its own already-
   short remaining TTL, not a permanent loss.
-- **`/me` re-reads the DB**, not the token's `role` claim — a role can
-  change after the token was issued, and this is the one endpoint whose
-  job is to report the truth.
-- **Refresh rotation, slice 2**: `family_id` is a fresh UUID per _login_,
+- **Refresh rotation**: `family_id` is a fresh UUID per _login_,
   independent of `user_id` — one compromised device's reuse detection
   revokes only that chain, not every session the user has. Idle TTL 7
   days (reset on each rotation), absolute TTL 30 days (never extended, so
@@ -1905,6 +1902,36 @@ npm run demo:queue
   `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
   prefix itself — the browser silently refuses the cookie otherwise).
   Never in a response body or a log line.
+- **Plain NestJS guards, not Zanzibar/ReBAC** — the bonus task's
+  suggestion was considered and set aside: both cases below are a
+  single boolean check against a row already in hand (order
+  ownership, role membership), with no relationship graph, no
+  indirection, and no delegation behind either one. A tuple store and
+  a relation-config DSL would only obscure that, for zero functional
+  gain over comparing the values directly.
+- **Order ownership (`GET /orders/:orderId`)** — a caller may only read
+  their own order. `OrderOwnershipGuard` existed before this slice as a
+  pre-auth placeholder (it trusted a client-supplied `userId`); it now
+  compares the order's real owner against the verified JWT subject
+  (`request.user.sub`, set by a preceding `AuthGuard`) instead.
+  Deliberately narrow scope: `POST /orders` and `GET /orders` (list)
+  are **not** gated — orders are still attributed to one placeholder
+  storefront customer, same as before this slice. Wiring real identity
+  into order creation would touch `demo:realtime` and most of the order
+  e2e tests; that's real scope for a later pass, not this one. The WS
+  `join` path (realtime order-status rooms) is unchanged for the same
+  reason it always was: no socket handshake auth exists yet.
+- **Admin-only product update (`PATCH /products/:productId`)** — only
+  `role: 'admin'` may change a product's price. `RolesGuard` checks the
+  access token's own `role` claim **directly, without re-reading the
+  DB** — the opposite call from `/me`'s "never trust the token's role"
+  precedent, deliberately: `/me` exists to give a client an accurate
+  view of its _own_ identity on demand, not to gate every request.
+  Re-reading the DB on every admin-gated call would erase the entire
+  latency benefit of a stateless access token. The accepted tradeoff: a
+  demoted admin keeps admin rights until their access token's `exp` (10
+  minutes) — bounded, deliberate, and written down here rather than
+  discovered as a surprise.
 
 ### Environment variables
 
@@ -1946,12 +1973,14 @@ node -e "console.log('REFRESH_TOKEN_PEPPER=' + require('node:crypto').randomByte
 | ------------ | --------------------------------------------------------------------------------------- | ---- |
 | `demo:auth`  | `login=200 no-token=401 with-token=200 refresh=200 logout=204 refresh-after-logout=401` | 0    |
 | `demo:reuse` | `login=200 r1-refresh=200 r1-reuse=401 r2-after-reuse=401`                              | 0    |
+| `demo:rbac`  | `anon=401 own=200 foreign=403 role-denied=403 role-allowed=200 tampered=401`            | 0    |
 
 ### Running the demos
 
 ```bash
 npm run demo:auth
 npm run demo:reuse
+npm run demo:rbac
 ```
 
 ## Grading
@@ -2036,6 +2065,7 @@ npm run migrate
 npm run seed
 npm run demo:auth
 npm run demo:reuse
+npm run demo:rbac
 ```
 
 ### Cumulative commands
@@ -2068,6 +2098,7 @@ npm run demo:ratelimit
 npm run demo:queue
 npm run demo:auth
 npm run demo:reuse
+npm run demo:rbac
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

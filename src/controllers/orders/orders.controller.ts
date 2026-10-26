@@ -18,6 +18,7 @@ import type { Request, Response } from 'express';
 
 import { IdempotencyKeyInterceptor } from '../../interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from '../../interceptors/location-header.interceptor.ts';
+import { AuthGuard } from '../auth/auth.guards.ts';
 
 import { OrderEventsService } from './order-events.service.ts';
 import { OrderOwnershipGuard } from './order-ownership.guard.ts';
@@ -47,7 +48,13 @@ export class OrdersController {
     return this.ordersService.create(body.items);
   }
 
+  // Ownership-gated since HW#24 slice 3: a user may only read their own
+  // order. OrderOwnershipGuard does its own existence lookup first (a
+  // lean one, just the owner's identity) — the 404 below only fires once
+  // that lookup has already confirmed the order both exists AND belongs
+  // to the caller.
   @Get(':orderId')
+  @UseGuards(AuthGuard, OrderOwnershipGuard)
   async getOne(@Param('orderId', ParseIntPipe) orderId: number) {
     const order = await this.ordersService.findById(orderId);
 
@@ -80,8 +87,12 @@ export class OrdersController {
   // ignorePaths) — validateResponses:true would have to buffer the whole
   // response to check it, which is incompatible with a stream designed to
   // never end.
+  // Shares OrderOwnershipGuard's HTTP branch with getOne() above, which
+  // now reads request.user (set by AuthGuard) instead of a query param —
+  // AuthGuard has to precede it here too, or every call is rejected as
+  // anonymous.
   @Get(':orderId/events')
-  @UseGuards(OrderOwnershipGuard)
+  @UseGuards(AuthGuard, OrderOwnershipGuard)
   streamEvents(
     @Param('orderId', ParseIntPipe) orderId: number,
     @Req() req: Request,

@@ -5,6 +5,7 @@ import {
   DEMO_BUYER_PASSWORD,
   extractCookie,
   type LoginResponse,
+  postLogin,
   startDemoApp,
 } from './demo.utils.ts';
 
@@ -14,14 +15,11 @@ async function main(): Promise<void> {
   const { baseUrl, close } = await startDemoApp();
 
   try {
-    const login = await fetch(`${baseUrl}/auth/login`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        email: DEMO_BUYER_EMAIL,
-        password: DEMO_BUYER_PASSWORD,
-      }),
-    });
+    const login = await postLogin(
+      baseUrl,
+      DEMO_BUYER_EMAIL,
+      DEMO_BUYER_PASSWORD,
+    );
 
     let { accessToken } = (await login.json()) as LoginResponse;
     let refreshCookie = extractCookie(login);

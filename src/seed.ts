@@ -23,6 +23,13 @@ import { AppDataSource } from './data-source.ts';
 export const DEMO_BUYER_EMAIL = 'demo-buyer@seed.example';
 export const DEMO_BUYER_PASSWORD = 'demo-buyer-password-1';
 
+// HW#24 slice 3 — demo:rbac needs a real admin login too, to show
+// the admin-only product update actually succeeding, not just the
+// non-admin 403. alice@seed.example already exists with role 'admin';
+// it just never had a password until now.
+export const DEMO_ADMIN_EMAIL = 'alice@seed.example';
+export const DEMO_ADMIN_PASSWORD = 'demo-admin-password-1';
+
 // Deterministic fixtures — fixed UUIDs / keys / prices, no random(), no
 // Date.now(). Idempotent: every table is inserted with ON CONFLICT DO
 // NOTHING on a natural key, so a second run writes nothing and fails
@@ -284,6 +291,17 @@ async function run(m: EntityManager): Promise<Inserted> {
     ).hash(DEMO_BUYER_PASSWORD);
 
     await m.getRepository(User).update(demoBuyer.id, { passwordHash });
+  }
+
+  // Same idempotent pattern, for demo:rbac's admin login.
+  const demoAdmin = mustGet(userByEmail, DEMO_ADMIN_EMAIL);
+
+  if (!demoAdmin.passwordHash) {
+    const passwordHash = await new PasswordService(
+      new ConcurrencyLimiter(),
+    ).hash(DEMO_ADMIN_PASSWORD);
+
+    await m.getRepository(User).update(demoAdmin.id, { passwordHash });
   }
 
   const inventory = await m

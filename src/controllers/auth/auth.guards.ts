@@ -1,11 +1,17 @@
 import type { CanActivate, ExecutionContext } from '@nestjs/common';
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Injectable,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 
 import { createRateLimitGuard } from '../../services/rate-limit/rate-limit.service.ts';
 
 import { AccessDenylistService } from './access-denylist.service.ts';
 import { AccessTokenService } from './access-token.service.ts';
+import { ROLES_KEY } from './roles.decorator.ts';
 
 const BEARER_PREFIX = 'Bearer ';
 
@@ -56,6 +62,41 @@ export class AuthGuard implements CanActivate {
 
   private unauthorized(detail: string): UnauthorizedException {
     return new UnauthorizedException({ title: 'Unauthorized', detail });
+  }
+}
+
+// Trusts the JWT's own `role` claim rather than re-reading the DB — the
+// opposite call from auth.controller.ts's me(), deliberately: that
+// endpoint exists to give a client an accurate view of its OWN identity
+// on demand, not to gate every request. Re-reading the DB here would
+// erase the entire latency benefit of a stateless access token. Accepted
+// tradeoff (see README): a demoted admin keeps admin rights until their
+// access token's exp (10 minutes), not revoked early.
+@Injectable()
+export class RolesGuard implements CanActivate {
+  constructor(private readonly reflector: Reflector) {}
+
+  canActivate(context: ExecutionContext): boolean {
+    const required = this.reflector.get<string[] | undefined>(
+      ROLES_KEY,
+      context.getHandler(),
+    );
+
+    if (!required || required.length === 0) {
+      return true;
+    }
+
+    const req = context.switchToHttp().getRequest<Request>();
+    const role = req.user?.role;
+
+    if (!role || !required.includes(role)) {
+      throw new ForbiddenException({
+        title: 'Forbidden',
+        detail: `Requires one of the following roles: ${required.join(', ')}.`,
+      });
+    }
+
+    return true;
   }
 }
 

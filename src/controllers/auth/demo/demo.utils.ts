@@ -1,3 +1,4 @@
+import type { INestApplication } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { unlink, writeFile } from 'node:fs/promises';
@@ -7,13 +8,34 @@ import path from 'node:path';
 import { configureApp } from '../../../configure-app.ts';
 import { requireEnv } from '../../../utils/require-env.ts';
 
-// Shared by demo-auth.ts and demo-reuse.ts — both boot the real app the
-// same way and need the same cookie/env plumbing around it.
+// Shared by demo-auth.ts, demo-reuse.ts, and demo-rbac.ts — all boot the
+// real app the same way and need the same cookie/env/login plumbing
+// around it.
 export const DEMO_BUYER_EMAIL = 'demo-buyer@seed.example';
 export const DEMO_BUYER_PASSWORD = 'demo-buyer-password-1';
 
+// demo-rbac.ts's admin login — see seed.ts's own comment on why
+// alice@seed.example (role 'admin') gets a real password now too.
+export const DEMO_ADMIN_EMAIL = 'alice@seed.example';
+export const DEMO_ADMIN_PASSWORD = 'demo-admin-password-1';
+
 export interface LoginResponse {
   accessToken: string;
+}
+
+// Named postLogin, not login — every caller already has a local `login`
+// (the response itself, used for its .status and/or passed to
+// extractCookie()), and importing a same-named function would shadow it.
+export function postLogin(
+  baseUrl: string,
+  email: string,
+  password: string,
+): Promise<Response> {
+  return fetch(`${baseUrl}/auth/login`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
 }
 
 // Node's fetch has no browser-style cookie jar — this pulls just the
@@ -67,6 +89,10 @@ async function deriveDbEnvFromUrl(): Promise<() => Promise<void>> {
 // the environment before deriveDbEnvFromUrl() ever got a chance to set it.
 export async function startDemoApp(): Promise<{
   baseUrl: string;
+  // Exposed for demo-rbac.ts, which needs to seed an order directly
+  // (app.get(DataSourceService)) rather than through POST /orders —
+  // see that demo's own comment on why.
+  app: INestApplication;
   close: () => Promise<void>;
 }> {
   const cleanupPasswordFile = await deriveDbEnvFromUrl();
@@ -93,6 +119,7 @@ export async function startDemoApp(): Promise<{
 
     return {
       baseUrl: `http://127.0.0.1:${address.port}`,
+      app,
       close: async () => {
         await app.close();
         await cleanupPasswordFile();

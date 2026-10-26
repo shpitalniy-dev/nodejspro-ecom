@@ -79,6 +79,62 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+    patch:
+      operationId: updateProductPrice
+      summary: Update a product's price (admin only)
+      description: >
+        HW#24 slice 3: admin-only — RolesGuard trusts the access token's
+        own `role` claim rather than re-reading it from the DB (see
+        README's Authorization section for the deliberate staleness
+        tradeoff this implies).
+      tags:
+        - products
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: The updated product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Invalid productId or request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller's role is not admin.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Product not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
   /orders:
     get:
@@ -172,8 +228,13 @@ paths:
     get:
       operationId: getOrder
       summary: Get a single order by id
+      description: >
+        HW#24 slice 3: ownership-gated — a caller may only read an order
+        that belongs to them (see README's Authorization section).
       tags:
         - orders
+      security:
+        - bearerAuth: []
       parameters:
         - name: orderId
           in: path
@@ -190,6 +251,18 @@ paths:
                 $ref: '#/components/schemas/Order'
         '400':
           description: Invalid orderId.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The order exists but belongs to a different user.
           content:
             application/problem+json:
               schema:
@@ -469,6 +542,17 @@ components:
         created_at:
           type: string
           format: date-time
+
+    UpdateProductRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - price_cents
+      properties:
+        price_cents:
+          type: integer
+          minimum: 0
+          description: Price in the smallest currency unit (e.g. cents).
 
     OrderItem:
       type: object

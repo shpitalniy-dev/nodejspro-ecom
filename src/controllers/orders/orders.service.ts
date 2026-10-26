@@ -84,17 +84,21 @@ export class OrdersService {
     return order ? toApiOrder(order) : undefined;
   }
 
-  // Lean lookup for OrderOwnershipGuard — only the two columns a WS join's
-  // ownership check needs, not the full items/product graph findById loads.
-  async getOwnerId(orderId: number): Promise<number | undefined> {
+  // Lean lookup for OrderOwnershipGuard — only the owner's identity, not
+  // the full items/product graph findById loads. Both the integer id
+  // (the WS join path's still-placeholder comparison) and the uuid (the
+  // real, verified-claims comparison on HTTP) come from one query.
+  async getOwner(
+    orderId: number,
+  ): Promise<{ id: number; uuid: string } | undefined> {
     const manager = await this.dataSourceService.getManager();
     const order = await manager.getRepository(OrderEntity).findOne({
       where: { id: orderId },
       relations: { user: true },
-      select: { id: true, user: { id: true } },
+      select: { id: true, user: { id: true, uuid: true } },
     });
 
-    return order?.user.id;
+    return order?.user;
   }
 
   // HW#18's realtime status-change endpoint — no transition-validity rules
