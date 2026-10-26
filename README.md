@@ -2056,6 +2056,14 @@ export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
 ```
 
+The exact same steps also live in [`scripts/grading-setup.sh`](scripts/grading-setup.sh),
+for re-running this without re-pasting it each time. It's a sequence of
+`export`s, so it must be **sourced** to leave those vars in your shell:
+
+```bash
+source scripts/grading-setup.sh
+```
+
 ### HW #19 commands
 
 ```bash
