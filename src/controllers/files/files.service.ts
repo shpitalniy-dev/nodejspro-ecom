@@ -1,6 +1,7 @@
 import {
   CopyObjectCommand,
   DeleteObjectCommand,
+  GetObjectCommand,
   HeadObjectCommand,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
@@ -10,6 +11,7 @@ import {
   ForbiddenException,
   Injectable,
   NotFoundException,
+  UnprocessableEntityException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
@@ -21,6 +23,7 @@ import { DataSourceService } from '../../services/data-source.service.ts';
 import { S3ClientService } from '../../services/storage/s3-client.service.ts';
 
 import type { UploadCommitResult, UploadIntentResult } from './files.types.ts';
+import { MAGIC_BYTES_CHECK_LENGTH, matchesMagicBytes } from './files.utils.ts';
 
 // The object key's extension comes from here, never from the client's own
 // filename — see createIntent()'s own comment on why that matters.
@@ -154,6 +157,26 @@ export class FilesService {
       throw new ConflictException({
         title: 'Upload not found in storage',
         detail: `No object was ever uploaded for "${row.key}".`,
+      });
+    }
+
+    const { Body } = await this.s3.client.send(
+      new GetObjectCommand({
+        Bucket: this.bucket,
+        Key: row.key,
+        Range: `bytes=0-${MAGIC_BYTES_CHECK_LENGTH - 1}`,
+      }),
+    );
+
+    const firstBytes = Body ? await Body.transformToByteArray() : null;
+
+    if (!firstBytes || !matchesMagicBytes(firstBytes, row.contentType)) {
+      // Left as-is, no new cleanup path needed for this:
+      // the lifecycle rule already expires anything there
+      // after a day, same as any other abandoned pending upload.
+      throw new UnprocessableEntityException({
+        title: 'Content does not match declared contentType',
+        detail: `The uploaded bytes for "${row.key}" don't match "${row.contentType}"'s file signature.`,
       });
     }
 

@@ -507,6 +507,10 @@ paths:
         HeadObject against the key from /uploads/intent — without this,
         a client could "commit" bytes it never uploaded. 409 means
         exactly that: the row exists, but storage has no object for it.
+        422 means the opposite kind of mismatch: bytes did land, but
+        their magic-bytes signature doesn't match the contentType
+        declared at intent time — Content-Type headers (declared or
+        sent) aren't trustworthy on their own, only the bytes are.
       tags:
         - uploads
       security:
@@ -552,6 +556,14 @@ paths:
           description: >
             No object was ever PUT to this upload's key — nothing to
             commit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '422':
+          description: >
+            The uploaded bytes' magic-bytes signature doesn't match the
+            contentType declared at intent time.
           content:
             application/problem+json:
               schema:

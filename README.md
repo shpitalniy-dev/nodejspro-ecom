@@ -2145,6 +2145,22 @@ and `demo:cdn` are still in progress and will land here, and in `## Files
   compares `row.owner.uuid` to the caller's JWT subject, same
   check-after-load pattern HW #24 settled on for order ownership (a
   guard has nothing to compare against before the resource is loaded).
+- **`commit()` verifies magic bytes against the declared `contentType`,
+  not any Content-Type header** — verified empirically, not assumed: a
+  presigned PUT's `ContentType` parameter isn't part of what SigV4 signs
+  (`X-Amz-SignedHeaders=host` only) and has zero effect on what ends up
+  stored — three live PUTs to the same presigned URL with no
+  Content-Type header, a mismatched one, and a matching one landed with
+  `undefined`, the mismatched one, and the matching one respectively as
+  the stored metadata. None of that is trustworthy input for a check, so
+  `commit()` instead does a ranged `GetObject` (`bytes=0-11`, enough to
+  cover PNG/JPEG/WEBP's signatures — Garage's ranged-GET support
+  confirmed working, not assumed) and compares the real bytes against
+  the content-type declared at `/uploads/intent` time. A mismatch is
+  `422`, and the row/object are left exactly as they are — no new
+  cleanup path needed, since anything left under `pending/` already
+  self-expires via the lifecycle rule above, the same as any other
+  abandoned upload.
 
 ### Measured runs
 

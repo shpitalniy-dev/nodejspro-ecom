@@ -24,6 +24,15 @@ interface IntentResponse {
   expiresIn: number;
 }
 
+// A real (if trivial — 1x1 transparent) PNG, not arbitrary text — commit()
+// verifies the uploaded bytes' magic-bytes signature against the declared
+// contentType, so the real upload step needs actual PNG bytes to reach
+// commit=200.
+const PNG_1X1 = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
+
 // Mutates a presigned URL's object key while leaving its signature
 // untouched — SigV4 covers the canonical request's path, so this must be
 // rejected regardless of which key it originally pointed at.
@@ -129,7 +138,7 @@ async function main(): Promise<void> {
 
     const putOffline = await fetch(intent.uploadUrl, {
       method: 'PUT',
-      body: Buffer.from('real upload bytes, app is offline'),
+      body: PNG_1X1,
     });
 
     const app2 = await startDemoApp();
