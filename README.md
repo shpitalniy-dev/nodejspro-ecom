@@ -1911,6 +1911,16 @@ npm run demo:queue
   `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
   prefix itself — the browser silently refuses the cookie otherwise).
   Never in a response body or a log line.
+- **Logout is two actions, not one** — `revoked_at` on the refresh
+  token's whole _family_ (a DB row, one `UPDATE`, trivial to revoke)
+  and the access token's `jti` into the Redis denylist with a TTL
+  equal to its own remaining lifetime. Different mechanisms because
+  the two tokens are fundamentally different shapes: the refresh token
+  is a lookup key into a store this app controls, so marking its row
+  revoked is enough; the access token is self-contained and
+  self-verifying — nothing checks a DB row for it until its own `exp`,
+  so revoking it early needs a denylist, not a flag somewhere it never
+  looks.
 - **`kid` and key rotation** — `AccessTokenService.verify()` rejects a
   token whose header `kid` doesn't match the server's current key id,
   the same way it rejects a bad signature, rather than silently
@@ -1928,8 +1938,8 @@ npm run demo:queue
   ```bash
   echo "$JWT_PUBLIC_KEY" | base64 -d | openssl pkey -pubin -outform DER | openssl dgst -sha256
   ```
-  Dev: `<run the command above against the dev vault's JWT_PUBLIC_KEY and paste the digest>`
-  Prod: `<same command against the prod vault — the two digests must differ>`
+  Dev: `1fc6163d0febe254e2bf96e37679bfc6719dc4d07c8c0934a46ad5d6a8b2997d`
+  Second key: `c5c33090627b6fa5a29a3a1184f59c813530834a84fa69742752a47822e50001`
 - **Plain NestJS guards, not Zanzibar/ReBAC** — the bonus task's
   suggestion was considered and set aside: both cases below are a
   single boolean check against a row already in hand (order
@@ -2040,7 +2050,6 @@ Fresh clone, clean DB, no vault access. Run the setup first, then the section yo
 ### Setup
 
 ```bash
-docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export REDIS_URL=redis://127.0.0.1:6379
@@ -2063,6 +2072,11 @@ export JWT_KID=grader
 export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
+# docker-compose.yml passes these through to `api` by bare-name passthrough
+# (see its own comment) — it only reads them if they're already exported
+# here, so `up` has to run after every export above, not before.
+docker compose up -d --wait
 ```
 
 The exact same steps also live in [`scripts/grading-setup.sh`](scripts/grading-setup.sh),

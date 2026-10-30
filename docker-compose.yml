@@ -64,6 +64,13 @@ services:
       # point 4; demo-session.ts (point 3) still connects to it directly,
       # host-side. Same API_*-override reasoning as REDIS_URL above.
       REDIS_QUEUE_URL: ${API_REDIS_QUEUE_URL:-redis://redis-queue:6380}
+      # HW #24 — JWT_KID/JWT_PRIVATE_KEY/JWT_PUBLIC_KEY/REFRESH_TOKEN_PEPPER
+      # have no default in env.schema.ts (required, by design), so without
+      # these lines this container never becomes healthy on a fresh clone.
+      JWT_KID:
+      JWT_PRIVATE_KEY:
+      JWT_PUBLIC_KEY:
+      REFRESH_TOKEN_PEPPER:
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
     # depend on it — that decision was about not requiring vault access,

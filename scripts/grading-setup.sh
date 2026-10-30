@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export REDIS_URL=redis://127.0.0.1:6379
@@ -22,3 +21,8 @@ export JWT_KID=grader
 export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
+# docker-compose.yml passes these through to `api` by bare-name passthrough
+# (see its own comment) — it only reads them if they're already exported
+# here, so `up` has to run after every export above, not before.
+docker compose up -d --wait
