@@ -452,6 +452,111 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /uploads/intent:
+    post:
+      operationId: createUploadIntent
+      summary: Start a presigned upload (HW #26)
+      description: >
+        Two-step upload contract: this issues a presigned PUT URL and a
+        pending files row; the client PUTs bytes straight to storage (no
+        bytes cross this API — see demo:upload's put-offline check), then
+        calls /uploads/commit. The object key is always server-generated
+        (uploads/{ownerUuid}/{uuid}.{ext}) — the client's filename, if
+        sent, is accepted for display only and never used to build it.
+      tags:
+        - uploads
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadIntentRequest'
+      responses:
+        '200':
+          description: Presigned upload URL issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadIntentResponse'
+        '400':
+          description: Invalid request body (e.g. disallowed contentType).
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: The access token's own user no longer exists.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /uploads/commit:
+    post:
+      operationId: commitUpload
+      summary: Confirm a presigned upload actually landed in storage
+      description: >
+        HeadObject against the key from /uploads/intent — without this,
+        a client could "commit" bytes it never uploaded. 409 means
+        exactly that: the row exists, but storage has no object for it.
+      tags:
+        - uploads
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadCommitRequest'
+      responses:
+        '200':
+          description: Upload confirmed and marked completed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadCommitResponse'
+        '400':
+          description: Invalid request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: This upload belongs to another user.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: No upload with this fileUuid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: >
+            No object was ever PUT to this upload's key — nothing to
+            commit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
 components:
   securitySchemes:
     bearerAuth:
@@ -671,6 +776,79 @@ components:
           format: email
         role:
           type: string
+
+    UploadIntentRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - contentType
+      properties:
+        contentType:
+          type: string
+          enum: [image/jpeg, image/png, image/webp]
+          description: >
+            Allowlisted MIME type — determines the generated object key's
+            extension.
+        filename:
+          type: string
+          description: >
+            Accepted for display purposes only — never used to build the
+            storage key (see files.service.ts's createIntent()).
+
+    UploadIntentResponse:
+      type: object
+      required:
+        - fileUuid
+        - key
+        - uploadUrl
+        - expiresIn
+      properties:
+        fileUuid:
+          type: string
+          format: uuid
+        key:
+          type: string
+          description: Server-generated object key.
+        uploadUrl:
+          type: string
+          format: uri
+          description: >
+            Presigned PUT URL — upload the file's bytes directly here,
+            then call /uploads/commit.
+        expiresIn:
+          type: integer
+          description: Seconds until uploadUrl expires.
+          example: 300
+
+    UploadCommitRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - fileUuid
+      properties:
+        fileUuid:
+          type: string
+          format: uuid
+
+    UploadCommitResponse:
+      type: object
+      required:
+        - fileUuid
+        - key
+        - status
+        - size
+      properties:
+        fileUuid:
+          type: string
+          format: uuid
+        key:
+          type: string
+        status:
+          type: string
+          enum: [completed]
+        size:
+          type: integer
+          description: Byte size, read back from storage via HeadObject.
 
     Problem:
       type: object

@@ -24,6 +24,7 @@
     "demo:retry": "bash scripts/with-secrets.sh dev node build/transactions/demo-retry.js",
     "demo:reuse": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-reuse.js",
     "demo:session": "bash scripts/with-secrets.sh dev node build/services/redis/demo/demo-session.js",
+    "demo:upload": "bash scripts/with-secrets.sh dev node build/controllers/files/demo/demo-upload.js",
     "demo:workers": "bash scripts/with-secrets.sh dev node build/transactions/demo-workers.js",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",

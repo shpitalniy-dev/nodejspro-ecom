@@ -16,6 +16,8 @@ import { AuthService } from './controllers/auth/auth.service.ts';
 import { PasswordService } from './controllers/auth/password.service.ts';
 import { RefreshGraceCacheService } from './controllers/auth/refresh-grace-cache.service.ts';
 import { RefreshTokenService } from './controllers/auth/refresh-token.service.ts';
+import { FilesController } from './controllers/files/files.controller.ts';
+import { FilesService } from './controllers/files/files.service.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
 import { OrderEventsService } from './controllers/orders/order-events.service.ts';
 import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
@@ -37,6 +39,7 @@ import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
 import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
 import { CacheRedisConnection } from './services/redis/cache-redis-connection.service.ts';
 import { QueueRedisConnection } from './services/redis/queue-redis-connection.service.ts';
+import { S3ClientService } from './services/storage/s3-client.service.ts';
 
 @Module({
   controllers: [
@@ -44,6 +47,7 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     ProductsController,
     OrdersController,
     AuthController,
+    FilesController,
   ],
   providers: [
     ProductsService,
@@ -70,6 +74,8 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     AuthGuard,
     LoginRateLimitGuard,
     RolesGuard,
+    S3ClientService,
+    FilesService,
     {
       provide: CacheAsideService,
       useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>

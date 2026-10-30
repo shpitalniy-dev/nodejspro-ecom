@@ -2043,6 +2043,170 @@ npm run demo:reuse
 npm run demo:rbac
 ```
 
+## Object storage: presigned uploads | HW #26
+
+Status: `demo:upload` (presigned intent/commit) is done. `demo:multipart`
+and `demo:cdn` are still in progress and will land here, and in `## Files
+| HW #26` below, with their own slices.
+
+**Key decisions:**
+
+- **Garage, not MinIO** — MinIO pulled `minio/minio`/`minio/mc` off Docker
+  Hub on 2026-09-11, so the previously-standard image no longer pulls on
+  a clean machine. Garage is S3-API-compatible (presigned URLs, multipart,
+  `forcePathStyle` all work the same) and its image is still published.
+  Nothing in the app code is Garage-specific — real S3, LocalStack, or R2
+  would work by changing `STORAGE_ENDPOINT` alone.
+- **Two-step upload contract**: `POST /uploads/intent` validates the
+  caller (`AuthGuard`) and `contentType` (allowlist), generates the
+  object key **server-side** (the client's own `filename`, if sent, is
+  accepted for display only and never read into the key path), and
+  returns a presigned PUT URL. The client PUTs bytes **directly to
+  storage** — zero bytes cross this API. `POST /uploads/commit` then does
+  a `HeadObject` before marking the row `completed`, so a client can't
+  "commit" an upload that never happened (`commit-without-bytes` → `409`).
+- **Presigned PUTs target a `pending/` staging key, not the final
+  `uploads/` one** (`pending/{ownerUuid}/{uuid}.{ext}` →
+  `uploads/{ownerUuid}/{uuid}.{ext}`, same uuid). `commit()` moves it
+  (`CopyObjectCommand` + `DeleteObjectCommand`, a server-side copy — no
+  bytes re-uploaded through us) only after the DB row is updated to
+  `completed`, not before: if the process died between the copy and the
+  DB write, the staging copy is still under `pending/` and the lifecycle
+  rule below cleans it up anyway, but a final-prefix orphan from the
+  other ordering would have no expiring prefix to catch it. This is what
+  makes the lifecycle rule below _safe_ to apply — nothing under
+  `uploads/` is ever something a client PUT directly, so nothing there is
+  ever a candidate for automatic expiry.
+  🔴 **Copy, not a tag** — the lighter-weight version of this pattern
+  tags an object `status=pending` at upload time (bake `Tagging` into the
+  presigned PUT) and `commit()` just flips/removes the tag — no data
+  movement at all, and on real AWS S3 (or MinIO) a lifecycle rule can
+  filter on that tag directly. **Garage v2.1.0 doesn't support object
+  tagging** — confirmed empirically, not assumed: `GetObjectTagging`
+  returns a flat `501 NotImplemented`, and the admin API's own lifecycle
+  `Filter` schema has no `Tag` field to begin with (only `Prefix` and the
+  two `ObjectSize*` bounds). The copy-based design here exists because
+  it's the only one this specific backend can actually support — if this
+  project ever points at real S3, the tag-based version is worth
+  reconsidering as the more idiomatic (and cheaper) choice there.
+- **Presigned TTL = 300 seconds**, not "7 days because the signing scheme
+  allows it" — chosen for the actual scenario (a form upload: avatar,
+  product photo — a minutes-long window, not a long-lived link). SigV4's
+  own hard ceiling is 7 days, but a presigned URL this long-lived is a
+  bearer credential with no revocation mechanism (see HW #24's denylist
+  work — none of its four strategies apply here, since a presigned URL
+  carries no identifier). Short TTL is the only lever that actually
+  works, same principle as #24's own short-TTL-over-denylist choice.
+- **Garage's access key is `ImportKey`'d, not `CreateKey`'d** — we choose
+  `STORAGE_ACCESS_KEY`/`STORAGE_SECRET_KEY` ourselves (same way
+  `REFRESH_TOKEN_PEPPER` is generated, see HW #24) and tell Garage to
+  accept that exact value, rather than letting Garage mint a random one
+  and needing a side channel to retrieve it. That keeps the credential on
+  the same path every other secret here already uses: generated once →
+  `.env`/Infisical → `with-secrets.sh` for host-side scripts, bare
+  passthrough for the `api` container. Nothing Garage-generated ever
+  needs to travel anywhere.
+- **`garage-init`, a one-shot provisioning service** (`docker-compose.yml`,
+  same shape as `db-password-seed`) assigns the cluster layout, creates
+  the bucket, imports the key, grants it, and sets a bucket lifecycle
+  rule — all idempotently, on every `docker compose up -d --wait`, zero
+  manual steps. It builds from this project's own `Dockerfile`'s `deps`
+  stage (cache-shared with `api`'s own build, not a second image) and
+  bind-mounts only the script itself — never `node_modules` — since a
+  grader's `npm ci` runs _after_ `docker compose up -d --wait`, not
+  before (see this doc's own `## Grading` example), so a bind-mounted
+  `node_modules` would be empty exactly when it mattered.
+- **Two lifecycle rules on `hw26-uploads`**, applied by `garage-init`:
+  `AbortIncompleteMultipartUpload` after 7 days (an abandoned multipart
+  upload is billed forever and invisible to a plain object listing —
+  `Expiration` rules don't touch it, it's a different action), and
+  `Expiration` after 1 day scoped to the `pending/` prefix only (a client
+  that PUTs bytes and then abandons the flow — closes the tab, loses the
+  network, never calls `commit()` — leaves exactly that: real bytes, a
+  row that never reaches `completed`; this is what actually cleans it up,
+  independent of any app code running). The prefix scoping is what makes
+  the second rule safe to apply at all — a blanket `Expiration` would
+  eventually delete legitimate, long-kept files too, since nothing in a
+  bare key distinguishes "committed" from "abandoned" without it.
+  🔴 Honest boundary hit while building this: Garage v2.1.0's admin API
+  accepts `lifecycleRules` on `UpdateBucket` (it's in the current OpenAPI
+  spec) but silently ignores it — confirmed by testing against the
+  running container, not assumed from the docs; that field is documented
+  for a later admin API version than this image actually runs. Both
+  rules are applied via the real, working path instead: the S3-protocol
+  `PutBucketLifecycleConfiguration` call (SigV4-signed), confirmed to
+  persist via `GetBucketLifecycleConfiguration` read-back.
+- **No secret lives in a tracked file.** `garage/garage.toml` is
+  committed with no `rpc_secret`/`admin_token` — Garage reads both
+  natively from `GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` (supported since
+  v0.8.2), generated once and sourced the same way as every other secret
+  here, not hardcoded in a file git tracks.
+- **Ownership on commit, not a guard** — `commit()` loads the row, then
+  compares `row.owner.uuid` to the caller's JWT subject, same
+  check-after-load pattern HW #24 settled on for order ownership (a
+  guard has nothing to compare against before the resource is loaded).
+
+### Measured runs
+
+| Demo          | Output                                                                                                                  | Exit |
+| ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:upload` | `intent=200 key-from-server=1 api-alive=0 put-offline=200 commit=200 commit-without-bytes=409 tampered=403 expired=403` | 0    |
+
+Run twice in a row (and again from a `docker compose down -v` fresh
+volume) with identical output both times, and confirmed empty storage +
+`files` table after each run — self-cleanup, not just a lucky absence of
+leftover state.
+
+### Running the demos
+
+```bash
+npm run demo:upload
+```
+
+## Files | HW #26
+
+The homework's own required section. Status: covers setup and
+`demo:upload` fully; the CDN-form/bucket-policy/multipart-threshold items
+below land with their own slices (`demo:multipart`, `demo:cdn`).
+
+### Environment variables
+
+| Variable                 | Джерело                               | Навіщо                                                                                |
+| ------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side |
+| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                     |
+| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                |
+| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                |
+| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                              |
+| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app   |
+| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                     |
+
+`GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` aren't in `src/config/env.schema.ts`
+on purpose — the NestJS app never reads them, only the `garage` container
+and `scripts/garage-init.mjs` do, so they're out of scope for
+`check-env-example.js`'s app-schema-sync check.
+
+### Presigned URL lifetime
+
+300 seconds, chosen for the actual scenario this bucket serves (a form
+upload — avatar, product photo), not "7 days because SigV4 allows it." A
+long-lived presigned URL is a bearer credential with no revocation
+mechanism (none of HW #24's four denylist strategies apply — a presigned
+URL carries no identifier a store could key on), so short TTL is the only
+lever that actually works here. See this doc's `## Object storage |
+HW #26` section for the full reasoning.
+
+### CDN form, bucket policy, multipart threshold/part size
+
+Not decided yet — land with `demo:cdn`/`demo:multipart`, whichever comes
+first.
+
+### Own measured numbers
+
+See `## Object storage | HW #26` → `### Measured runs` — `demo:upload`'s
+own contract line, confirmed identical across two consecutive runs and a
+third run from a genuinely fresh `docker compose down -v` volume.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -2072,6 +2236,19 @@ export JWT_KID=grader
 export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
+# HW #26 — object storage (Garage). ACCESS_KEY/SECRET_KEY are ours to
+# choose (ImportKey, not CreateKey — see Object storage | HW #26's own
+# "Key decisions"), same throwaway-per-run shape as JWT_PRIVATE_KEY above.
+export STORAGE_ENDPOINT=http://127.0.0.1:6600
+export STORAGE_BUCKET_UPLOADS=hw26-uploads
+# Garage enforces the key-ID shape: GK + 12 hex-encoded bytes.
+export STORAGE_ACCESS_KEY="GK$(node -e "console.log(require('node:crypto').randomBytes(12).toString('hex'))")"
+export STORAGE_SECRET_KEY="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+# Read natively by the garage binary itself, not this project's code — see
+# garage/garage.toml's own comment on why they're not in that committed file.
+export GARAGE_RPC_SECRET="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+export GARAGE_ADMIN_TOKEN="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
 
 # docker-compose.yml passes these through to `api` by bare-name passthrough
 # (see its own comment) — it only reads them if they're already exported
@@ -2140,6 +2317,17 @@ npm run demo:reuse
 npm run demo:rbac
 ```
 
+### HW #26 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:upload
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -2171,6 +2359,7 @@ npm run demo:queue
 npm run demo:auth
 npm run demo:reuse
 npm run demo:rbac
+npm run demo:upload
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh
