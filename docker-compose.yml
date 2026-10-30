@@ -71,6 +71,11 @@ services:
       JWT_PRIVATE_KEY:
       JWT_PUBLIC_KEY:
       REFRESH_TOKEN_PEPPER:
+      # HW #26 — object storage (Garage)
+      STORAGE_ENDPOINT: ${API_STORAGE_ENDPOINT:-http://garage:3900}
+      STORAGE_ACCESS_KEY:
+      STORAGE_SECRET_KEY:
+      STORAGE_BUCKET_UPLOADS:
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
     # depend on it — that decision was about not requiring vault access,
@@ -118,6 +123,8 @@ services:
         condition: service_healthy
       redis-queue:
         condition: service_healthy
+      garage-init:
+        condition: service_completed_successfully
     deploy:
       resources:
         limits:
@@ -404,6 +411,82 @@ services:
           cpus: '0.1'
           memory: 96M
 
+  garage:
+    image: dxflrs/garage:v2.1.0
+    restart: unless-stopped
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Read natively by the garage binary (not this project's own code) —
+      # see garage/garage.toml's own comment on why they're not in that
+      # committed file. Same bare-passthrough resolution as JWT_KID etc.
+      # on `api` below: .env's value, or a grading-exported shell var.
+      GARAGE_RPC_SECRET:
+      GARAGE_ADMIN_TOKEN:
+    volumes:
+      - ./garage/garage.toml:/etc/garage.toml:ro
+      - garage_data:/var/lib/garage
+    ports:
+      - '127.0.0.1:6600:3900'
+      # Admin API — garage-init (below) hits this in-network; published to
+      # the host too so a human can also run scripts/garage-init.mjs by
+      # hand without docker exec.
+      - '127.0.0.1:6601:3903'
+    healthcheck:
+      # `/garage status` fans out into GetClusterStatus + GetClusterLayout
+      # admin-API calls plus a fresh RPC handshake each time it runs —
+      # start_interval keeps startup detection fast (1s, so
+      # `docker compose up --wait` doesn't stall) without polling that
+      # forever once healthy; interval governs the steady-state cadence
+      # after start_period elapses.
+      test: ['CMD', '/garage', 'status']
+      interval: 30s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+      start_interval: 1s
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 192M
+        reservations:
+          cpus: '0.1'
+          memory: 96M
+
+  # One-shot: ensures Garage has a cluster layout, the hw26-uploads bucket,
+  # and our own STORAGE_ACCESS_KEY/SECRET_KEY imported and granted on it —
+  # see scripts/garage-init.mjs's own comment for why this is `ImportKey`
+  # (we choose the value, same as REFRESH_TOKEN_PEPPER) rather than
+  # `CreateKey` (Garage would choose it, forcing a shared-file handoff).
+  # Same env resolution as api's JWT_* vars below: env_file + bare
+  # passthrough, so this picks up either .env or a grading-exported shell
+  # var, whichever is present.
+  garage-init:
+    build:
+      context: .
+      target: deps
+    volumes:
+      - ./scripts/garage-init.mjs:/app/garage-init.mjs:ro
+    entrypoint: ['node', 'garage-init.mjs']
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      GARAGE_ADMIN_URL: http://garage:3903
+      GARAGE_ADMIN_TOKEN:
+      # In-network S3 endpoint — the lifecycle step (SigV4-signed, see
+      # scripts/garage-init.mjs) talks to the S3 API, not the admin API;
+      # Garage v2.1.0's admin API silently ignores lifecycleRules on
+      # UpdateBucket.
+      STORAGE_ENDPOINT: http://garage:3900
+      STORAGE_ACCESS_KEY:
+      STORAGE_SECRET_KEY:
+    depends_on:
+      garage:
+        condition: service_healthy
+
   # Opt-in only: `docker compose --profile contract up -d --wait broker`.
   # Pact Broker for HW#16 point 6 — stores the consumer/provider contract
   # plus verification results, and answers can-i-deploy. Own tiny Postgres,
@@ -500,6 +583,7 @@ volumes:
   basebackup:
   pgdata_pitr:
   rabbitmq_data:
+  garage_data:
 
 secrets:
   infisical_client_secret:

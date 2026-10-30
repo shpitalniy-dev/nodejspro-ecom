@@ -22,6 +22,19 @@ export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
 
+# HW #26 — object storage (Garage). ACCESS_KEY/SECRET_KEY are ours to
+# choose (ImportKey, not CreateKey — see scripts/garage-init.mjs), same
+# throwaway-per-run shape as JWT_PRIVATE_KEY/REFRESH_TOKEN_PEPPER above.
+export STORAGE_ENDPOINT=http://127.0.0.1:6600
+export STORAGE_BUCKET_UPLOADS=hw26-uploads
+# Garage enforces the key-ID shape: GK + 12 hex-encoded bytes.
+export STORAGE_ACCESS_KEY="GK$(node -e "console.log(require('node:crypto').randomBytes(12).toString('hex'))")"
+export STORAGE_SECRET_KEY="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+# Read natively by the garage binary itself, not this project's code — see
+# garage/garage.toml's own comment on why they're not in that committed file.
+export GARAGE_RPC_SECRET="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+export GARAGE_ADMIN_TOKEN="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
 # docker-compose.yml passes these through to `api` by bare-name passthrough
 # (see its own comment) — it only reads them if they're already exported
 # here, so `up` has to run after every export above, not before.
