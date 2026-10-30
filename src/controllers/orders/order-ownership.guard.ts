@@ -19,15 +19,27 @@ interface Identity {
 }
 
 // Pure authorization boundary for both realtime transports: the WS 'join'
-// message and the SSE `GET /orders/:orderId/events?userId=` request. No auth
-// system exists yet (see orders.service.ts's own placeholder-customer note),
-// so the client states its own userId, and this guard is what actually
-// verifies it against the order's real owner in the DB before the handler
-// ever runs. A rejection throws — a socket 'exception' event over WS, the
-// matching 4xx problem response over HTTP (thrown before the SSE handler
-// writes any header, so ProblemExceptionFilter still formats it). This is
-// the first guard in the codebase; it's the natural slot real auth replaces
-// later (HW#24), not a parallel mechanism sitting next to it.
+// message and the SSE `GET /orders/:orderId/events` request. NOT used by
+// the plain `GET /orders/:orderId` read (HW#24 slice 3 moved that check
+// into OrdersController itself — see getOne()'s own comment on why): a
+// generic guard has no resource to compare against without a lookup of
+// its own, and getOne() already runs the one query it needs regardless,
+// so checking ownership there costs nothing extra. SSE and WS are
+// different — neither loads a response body the way getOne() does, so
+// there's no already-in-hand query to piggyback the owner's identity on;
+// this guard's own lookup (getOwner()) is the cheapest it gets for them.
+//
+// The two transports verify identity very differently, and that's a
+// deliberate, bounded gap, not an oversight: over HTTP, a preceding
+// AuthGuard has already verified the caller's identity (a signed JWT) and
+// set request.user, so this guard compares the order's real owner uuid
+// against that verified claim. Over WS, no socket handshake auth exists
+// yet — the client still just states its own userId in the 'join' body,
+// unverified, exactly as before HW#24. Fixing that is a separate design
+// decision (a handshake auth strategy), out of scope here. A rejection
+// throws — a socket 'exception' event over WS, the matching 4xx problem
+// response over HTTP (thrown before the SSE handler writes any header, so
+// ProblemExceptionFilter still formats it).
 @Injectable()
 export class OrderOwnershipGuard implements CanActivate {
   constructor(private readonly ordersService: OrdersService) {}
@@ -45,24 +57,33 @@ export class OrderOwnershipGuard implements CanActivate {
       this.reject(context, 'anonymous', orderId);
     }
 
-    const ownerId = await this.ordersService.getOwnerId(orderId);
+    const owner = await this.ordersService.getOwner(orderId);
 
-    if (ownerId === undefined) {
+    if (owner === undefined) {
       this.reject(context, 'not_found', orderId);
     }
 
-    if (ownerId !== Number(userId)) {
+    const isOwner =
+      context.getType() === 'http'
+        ? owner.uuid === userId
+        : owner.id === Number(userId);
+
+    if (!isOwner) {
       this.reject(context, 'forbidden', orderId);
     }
 
     return true;
   }
 
+  // HTTP: userId is the verified JWT subject (claims.sub, a uuid) set by
+  // AuthGuard — never read from the request itself. WS: still the
+  // client-stated, unverified integer id from the join body (see this
+  // class's own comment on why that gap is deliberate for now).
   private readIdentity(context: ExecutionContext): Identity {
     if (context.getType() === 'http') {
       const req = context.switchToHttp().getRequest<Request>();
 
-      return { orderId: req.params.orderId, userId: req.query.userId };
+      return { orderId: req.params.orderId, userId: req.user?.sub };
     }
 
     const body = context

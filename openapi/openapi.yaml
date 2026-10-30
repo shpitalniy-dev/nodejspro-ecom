@@ -79,6 +79,62 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
+    patch:
+      operationId: updateProductPrice
+      summary: Update a product's price (admin only)
+      description: >
+        HW#24 slice 3: admin-only — RolesGuard trusts the access token's
+        own `role` claim rather than re-reading it from the DB (see
+        README's Authorization section for the deliberate staleness
+        tradeoff this implies).
+      tags:
+        - products
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: productId
+          in: path
+          required: true
+          schema:
+            type: integer
+            minimum: 1
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateProductRequest'
+      responses:
+        '200':
+          description: The updated product.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Product'
+        '400':
+          description: Invalid productId or request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The caller's role is not admin.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: Product not found.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
 
   /orders:
     get:
@@ -172,8 +228,13 @@ paths:
     get:
       operationId: getOrder
       summary: Get a single order by id
+      description: >
+        HW#24 slice 3: ownership-gated — a caller may only read an order
+        that belongs to them (see README's Authorization section).
       tags:
         - orders
+      security:
+        - bearerAuth: []
       parameters:
         - name: orderId
           in: path
@@ -190,6 +251,18 @@ paths:
                 $ref: '#/components/schemas/Order'
         '400':
           description: Invalid orderId.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: The order exists but belongs to a different user.
           content:
             application/problem+json:
               schema:
@@ -246,7 +319,145 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /auth/login:
+    post:
+      operationId: login
+      summary: Log in and receive an access token
+      description: >
+        Also sets the __Host-rt refresh cookie (httpOnly, Secure,
+        SameSite=Strict — see README's Auth section). LoginRateLimitGuard
+        and PasswordService's own ConcurrencyLimiter both guard this route
+        against the memory cost of concurrent argon2id password
+        verification; either one tripping returns the same 429 below.
+      tags:
+        - auth
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LoginRequest'
+      responses:
+        '200':
+          description: Access token issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '400':
+          description: Invalid request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Email or password is incorrect.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '429':
+          description: >
+            Too many login attempts in flight — either LoginRateLimitGuard
+            (per-client) or PasswordService's concurrency limiter (global)
+            tripped.
+          headers:
+            Retry-After:
+              description: Seconds to wait before retrying.
+              schema:
+                type: string
+                example: '2'
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /auth/refresh:
+    post:
+      operationId: refresh
+      summary: Rotate the refresh token and issue a new access token
+      description: >
+        No request body — reads the __Host-rt cookie. Every rejection
+        (unknown, expired, already-revoked, or reused token) returns the
+        same 401 and clears the cookie; a reused token additionally
+        revokes its whole family server-side (see README's Auth section),
+        not just itself, which is what also invalidates whatever token the
+        legitimate client was issued one rotation ahead.
+      tags:
+        - auth
+      responses:
+        '200':
+          description: New access token issued; __Host-rt cookie rotated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LoginResponse'
+        '401':
+          description: >
+            Missing, unknown, expired, revoked, or reused refresh token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /auth/me:
+    get:
+      operationId: getCurrentUser
+      summary: Identity from the current access token
+      description: >
+        The access token only proves identity (its subject); the response
+        here is read fresh from the DB rather than from the token's own
+        role claim, since a role can change after the token was issued —
+        the token's role is a cache/UI-hint, not re-used as the source of
+        truth here (see README's Auth section).
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The caller's identity.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
+  /auth/logout:
+    post:
+      operationId: logout
+      summary: Log out — denylists the access token and revokes the refresh family
+      description: >
+        Two actions: denylists the access token's jti for its own
+        remaining TTL (best-effort — see AccessDenylistService's own
+        comment on why a Redis failure here doesn't fail the request), and
+        revokes the __Host-rt cookie's refresh family if the cookie is
+        present. The cookie is cleared either way.
+      tags:
+        - auth
+      security:
+        - bearerAuth: []
+      responses:
+        '204':
+          description: Logged out.
+        '401':
+          description: Missing, invalid, expired, or already-denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
 components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
   parameters:
     Limit:
       name: limit
@@ -332,6 +543,17 @@ components:
           type: string
           format: date-time
 
+    UpdateProductRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - price_cents
+      properties:
+        price_cents:
+          type: integer
+          minimum: 0
+          description: Price in the smallest currency unit (e.g. cents).
+
     OrderItem:
       type: object
       required:
@@ -407,6 +629,48 @@ components:
           type: string
           enum: [unpaid, pending, paid, refunded]
       additionalProperties: false
+
+    LoginRequest:
+      type: object
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          minLength: 1
+      additionalProperties: false
+
+    LoginResponse:
+      type: object
+      required:
+        - accessToken
+        - expiresIn
+      properties:
+        accessToken:
+          type: string
+        expiresIn:
+          type: integer
+          description: Seconds until the access token expires.
+          example: 600
+
+    CurrentUser:
+      type: object
+      required:
+        - id
+        - email
+        - role
+      properties:
+        id:
+          type: integer
+        email:
+          type: string
+          format: email
+        role:
+          type: string
 
     Problem:
       type: object

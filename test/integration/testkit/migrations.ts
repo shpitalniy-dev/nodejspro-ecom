@@ -2,6 +2,8 @@ import { InitialSchema1789069491002 } from '../../../src/migrations/178906949100
 import { AddBalanceAndTasks1789156780786 } from '../../../src/migrations/1789156780786-AddBalanceAndTasks.ts';
 import { AddOrderItemsIndexes1789231614310 } from '../../../src/migrations/1789231614310-AddOrderItemsIndexes.ts';
 import { AddOutboxAndProcessedMessages1789300000000 } from '../../../src/migrations/1789300000000-AddOutboxAndProcessedMessages.ts';
+import { AddUserPasswordHash1789400000000 } from '../../../src/migrations/1789400000000-AddUserPasswordHash.ts';
+import { AddRefreshTokens1789500000000 } from '../../../src/migrations/1789500000000-AddRefreshTokens.ts';
 
 // Chronological list of migration classes, in run order — used by the
 // integration/E2E test DataSource (postgres-container.ts) instead of the
@@ -20,4 +22,6 @@ export const migrations = [
   AddBalanceAndTasks1789156780786,
   AddOrderItemsIndexes1789231614310,
   AddOutboxAndProcessedMessages1789300000000,
+  AddUserPasswordHash1789400000000,
+  AddRefreshTokens1789500000000,
 ];

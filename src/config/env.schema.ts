@@ -33,6 +33,19 @@ export const envSchema = z.object({
   // connections); demo-session.ts (point 3) still connects to it directly,
   // host-side.
   REDIS_QUEUE_URL: z.url({ protocol: /^rediss?$/ }),
+  // Access-token signing (HW #24). Sourced from the vault, same as every
+  // other secret — no default here, a default would mean a key baked into
+  // the code. kid is a label, not a secret; the two keys are base64 of a
+  // PEM (PKCS#8 private / SPKI public) each, so a multi-line PEM survives
+  // export intact (see src/config/jwt-keys.ts for the decode step).
+  JWT_KID: z.string().min(1),
+  JWT_PRIVATE_KEY: z.string().min(1),
+  JWT_PUBLIC_KEY: z.string().min(1),
+  // Refresh-token hashing (HW #24). Mixed into the HMAC alongside the
+  // presented token before it's compared to the stored hash — kept outside
+  // the database specifically so a DB dump alone can't be used to forge or
+  // verify a refresh token. Base64 of >=32 random bytes.
+  REFRESH_TOKEN_PEPPER: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;

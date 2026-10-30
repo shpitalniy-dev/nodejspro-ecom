@@ -59,4 +59,31 @@ export class ProductsService {
 
     return product ? toApiProduct(product) : null;
   }
+
+  // Admin-only write (ProductsController.updatePrice). Busts the cache
+  // key rather than writing the new value into it directly — the next
+  // findById() just re-reads the DB and repopulates, same as any other
+  // cache miss, no special-cased "write-through" path to keep in sync.
+  async updatePriceCents(
+    id: number,
+    priceCents: string,
+  ): Promise<Product | undefined> {
+    const manager = await this.dataSourceService.getManager();
+    const repo = manager.getRepository(ProductEntity);
+
+    // updatedAt is never set here — the set_updated_at() BEFORE UPDATE
+    // trigger (see product.entity.ts's own comment) already stamps it on
+    // any UPDATE to this row.
+    const result = await repo.update({ id }, { priceCents });
+
+    if (!result.affected) {
+      return undefined;
+    }
+
+    await this.cacheAside.invalidate(productCacheKey(id));
+
+    const product = await repo.findOneBy({ id });
+
+    return product ? toApiProduct(product) : undefined;
+  }
 }

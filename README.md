@@ -1854,6 +1854,195 @@ npm run demo:ratelimit
 npm run demo:queue
 ```
 
+## Authentication | HW #24
+
+**Key decisions:**
+
+- **ES256**, not RS256 — OWASP recommends it; `verify()` passes an explicit
+  `algorithms: ['ES256']` allowlist (RFC 8725 §3.1), never read from the
+  token's own header.
+- **Argon2id via `@node-rs/argon2`**, not `argon2` (ranisalt) — the latter
+  needs an install script to fetch its native binary, which this repo's
+  `Dockerfile` (`npm ci --ignore-scripts`) would break. Params
+  (`memoryCost: 19456, timeCost: 2, parallelism: 1`, an OWASP tuple) are
+  explicit, not left at the library default.
+- **Concurrent-hash memory is bounded two ways**: `LoginRateLimitGuard`
+  (per-client, brute-force protection) and `PasswordService`'s own
+  `ConcurrencyLimiter` (global cap on in-flight hashes — 24 concurrent ×
+  19 MiB stays under the `api` container's 1G limit; a full queue rejects
+  rather than growing forever). Both return `429`.
+- **Denylist in Redis (`redis-queue`), not Postgres** — the homework
+  allows either. Redis wins here for one concrete reason: a TTL-keyed
+  entry expires itself for free, so the denylist's size is bounded by TTL
+  alone, never by how many tokens were ever issued — in Postgres that's a
+  column plus a cleanup job to build by hand. The tradeoff this creates is
+  the same dual-write shape HW #22 already covers (write to one store,
+  effect in another, no cross-store transaction) — accepted here because,
+  unlike a lost outbox event, the failure mode is bounded and self-healing:
+  a missed denylist write just means the token lives out its own already-
+  short remaining TTL, not a permanent loss.
+- **Refresh rotation**: `family_id` is a fresh UUID per _login_,
+  independent of `user_id` — one compromised device's reuse detection
+  revokes only that chain, not every session the user has. Idle TTL 7
+  days (reset on each rotation), absolute TTL 30 days (never extended, so
+  an endlessly-active chain still can't outlive it — RFC 9700 §4.14.2).
+  Hashed with HMAC-SHA256 + a vault pepper (`REFRESH_TOKEN_PEPPER`), not
+  bare SHA-256 or `sha256(pepper+token)` — the latter is
+  length-extension-vulnerable; HMAC's two-pass construction is what
+  actually closes that.
+- **Winner-takes-claim needs no explicit lock** — a single conditional
+  `UPDATE ... WHERE used_at IS NULL RETURNING id` already gives
+  exactly-one-winner semantics under Postgres's default `READ COMMITTED`.
+  A loser within a 3s grace window gets the winner's already-minted pair
+  back (cached in Redis, not regenerated — there's nothing to regenerate
+  from); a loser outside it is genuine reuse, which revokes the _whole_
+  family, including whatever the winner just issued one step ahead — that
+  last part is what actually proves detection fired, not just rotation.
+  **The grace-cache entry is AES-256-GCM encrypted**, not plaintext — a
+  code-review catch: that cache has to hand the loser back the exact
+  same new refresh token (nothing to regenerate from), so unlike the
+  DB's `token_hash` column, hashing it isn't an option — a hash can
+  verify a token but can never reconstruct the secret it came from. The
+  key is derived from the same vaulted `REFRESH_TOKEN_PEPPER` via HKDF
+  with a distinct label, not a new secret — domain-separated from the
+  pepper's own HMAC use, so a Redis dump inside that 3s window is
+  ciphertext, not a live session.
+- **Refresh token lives only in a cookie** — `__Host-rt`, `httpOnly`,
+  `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
+  prefix itself — the browser silently refuses the cookie otherwise).
+  Never in a response body or a log line.
+- **Logout is two actions, not one** — `revoked_at` on the refresh
+  token's whole _family_ (a DB row, one `UPDATE`, trivial to revoke)
+  and the access token's `jti` into the Redis denylist with a TTL
+  equal to its own remaining lifetime. Different mechanisms because
+  the two tokens are fundamentally different shapes: the refresh token
+  is a lookup key into a store this app controls, so marking its row
+  revoked is enough; the access token is self-contained and
+  self-verifying — nothing checks a DB row for it until its own `exp`,
+  so revoking it early needs a denylist, not a flag somewhere it never
+  looks.
+- **`kid` and key rotation** — `AccessTokenService.verify()` rejects a
+  token whose header `kid` doesn't match the server's current key id,
+  the same way it rejects a bad signature, rather than silently
+  accepting any key that happens to verify. This repo keeps exactly
+  one active key pair (no multi-key verification registry), so
+  rotating `JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY` invalidates
+  every outstanding access token immediately — bounded by their own
+  10-minute TTL, not an open-ended outage. Refresh tokens are
+  unaffected by a rotation at all (they're opaque and hash-stored,
+  never signed), so the real user-facing cost of rotating the signing
+  key is at most one early refresh, not a forced re-login. Fingerprint
+  (SHA-256 of the SPKI-encoded public key), to prove dev and prod
+  genuinely use different keys rather than one key copied between
+  environments:
+  ```bash
+  echo "$JWT_PUBLIC_KEY" | base64 -d | openssl pkey -pubin -outform DER | openssl dgst -sha256
+  ```
+  Dev: `1fc6163d0febe254e2bf96e37679bfc6719dc4d07c8c0934a46ad5d6a8b2997d`
+  Second key: `c5c33090627b6fa5a29a3a1184f59c813530834a84fa69742752a47822e50001`
+- **Plain NestJS guards, not Zanzibar/ReBAC** — the bonus task's
+  suggestion was considered and set aside: both cases below are a
+  single boolean check against a row already in hand (order
+  ownership, role membership), with no relationship graph, no
+  indirection, and no delegation behind either one. A tuple store and
+  a relation-config DSL would only obscure that, for zero functional
+  gain over comparing the values directly.
+- **Order ownership (`GET /orders/:orderId`)** — a caller may only read
+  their own order. `OrderOwnershipGuard` existed before this slice as a
+  pre-auth placeholder (it trusted a client-supplied `userId`); it now
+  compares the order's real owner against the verified JWT subject
+  (`request.user.sub`, set by a preceding `AuthGuard`) instead.
+  Deliberately narrow scope: `POST /orders` and `GET /orders` (list)
+  are **not** gated — orders are still attributed to one placeholder
+  storefront customer, same as before this slice. Wiring real identity
+  into order creation would touch `demo:realtime` and most of the order
+  e2e tests; that's real scope for a later pass, not this one. The WS
+  `join` path (realtime order-status rooms) is unchanged for the same
+  reason it always was: no socket handshake auth exists yet.
+  **Where the ownership check actually lives**: in `OrdersController`,
+  after `OrdersService.findByIdForOwner()` has already loaded the
+  order — not in a guard. A guard runs before the resource is loaded,
+  so a generic ownership guard would have nothing to compare against
+  without a lookup of its own, meaning the same order gets queried
+  twice per request: once for the guard's check, once for the
+  handler's response. `findByIdForOwner()` is the one query `getOne()`
+  needed anyway (it already joins `user` to build the response's
+  `user_id` field); it just also hands back that same row's owner
+  `uuid`, so the 403/200 decision costs nothing beyond the load the
+  handler was always going to do. This mirrors how other frameworks
+  split the same concern — Django REST Framework's
+  `has_object_permission` runs after the object is fetched for exactly
+  this reason, and ASP.NET Core's resource-based authorization is
+  explicitly checked in the handler, not in middleware. `AuthGuard` and
+  `RolesGuard` stay guards because neither needs resource-specific
+  data to decide anything — only ownership does, which is what puts it
+  on the other side of that line. The SSE `events` route and the WS
+  `join` path still use a guard (`OrderOwnershipGuard`) for this,
+  because neither of them loads a response body in the first place —
+  there's no already-in-hand query to reuse there, so a guard's own
+  lookup is the cheapest option available to them.
+- **Admin-only product update (`PATCH /products/:productId`)** — only
+  `role: 'admin'` may change a product's price. `RolesGuard` checks the
+  access token's own `role` claim **directly, without re-reading the
+  DB** — the opposite call from `/me`'s "never trust the token's role"
+  precedent, deliberately: `/me` exists to give a client an accurate
+  view of its _own_ identity on demand, not to gate every request.
+  Re-reading the DB on every admin-gated call would erase the entire
+  latency benefit of a stateless access token. The accepted tradeoff: a
+  demoted admin keeps admin rights until their access token's `exp` (10
+  minutes) — bounded, deliberate, and written down here rather than
+  discovered as a surprise.
+
+### Environment variables
+
+| Variable               | Джерело       | Навіщо                                   |
+| ---------------------- | ------------- | ---------------------------------------- |
+| `JWT_KID`              | сховище (#11) | key id in the token header, not a secret |
+| `JWT_PRIVATE_KEY`      | сховище (#11) | signs access tokens (base64 PKCS#8 PEM)  |
+| `JWT_PUBLIC_KEY`       | сховище (#11) | verifies access tokens (base64 SPKI PEM) |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | HMAC pepper for refresh-token hashes     |
+
+### Generating a dev key pair
+
+```bash
+node -e "
+const { generateKeyPairSync, randomBytes } = require('node:crypto');
+const { privateKey, publicKey } = generateKeyPairSync('ec', {
+  namedCurve: 'P-256',
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+});
+console.log('JWT_KID=k' + randomBytes(2).toString('hex'));
+console.log('JWT_PRIVATE_KEY=' + Buffer.from(privateKey).toString('base64'));
+console.log('JWT_PUBLIC_KEY=' + Buffer.from(publicKey).toString('base64'));
+" >> .env
+```
+
+For RS256: `generateKeyPairSync('rsa', { modulusLength: 2048, ... })` — same
+encoding either way, PKCS#8/SPKI aren't algorithm-specific.
+
+`REFRESH_TOKEN_PEPPER` the same way — any 32+ random bytes, base64:
+
+```bash
+node -e "console.log('REFRESH_TOKEN_PEPPER=' + require('node:crypto').randomBytes(32).toString('base64'))" >> .env
+```
+
+### Measured runs
+
+| Demo         | Output                                                                                                   | Exit |
+| ------------ | -------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:auth`  | `login=200 no-token=401 with-token=200 refresh=200 logout=204 after-logout=401 refresh-after-logout=401` | 0    |
+| `demo:reuse` | `login=200 r1-refresh=200 r1-reuse=401 r2-after-reuse=401`                                               | 0    |
+| `demo:rbac`  | `anon=401 own=200 foreign=403 role-denied=403 role-allowed=200 tampered=401`                             | 0    |
+
+### Running the demos
+
+```bash
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
+```
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -1861,12 +2050,41 @@ Fresh clone, clean DB, no vault access. Run the setup first, then the section yo
 ### Setup
 
 ```bash
-docker compose up -d --wait
 export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:6432/ecom
 export BROKER_URL=amqp://app:app@127.0.0.1:5672
 export REDIS_URL=redis://127.0.0.1:6379
 export REDIS_QUEUE_URL=redis://127.0.0.1:6380
 export SKIP_VAULT=1
+
+# one-time ES256 pair for this run — see Authentication | HW #24's own
+# "Generating a dev key pair" for what each line does
+node -e "
+const { generateKeyPairSync } = require('node:crypto');
+const k = generateKeyPairSync('ec', {
+  namedCurve: 'P-256',
+  privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  publicKeyEncoding: { type: 'spki', format: 'pem' },
+});
+require('node:fs').writeFileSync('/tmp/jwt-priv.b64', Buffer.from(k.privateKey).toString('base64'));
+require('node:fs').writeFileSync('/tmp/jwt-pub.b64', Buffer.from(k.publicKey).toString('base64'));
+"
+export JWT_KID=grader
+export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
+export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
+export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
+# docker-compose.yml passes these through to `api` by bare-name passthrough
+# (see its own comment) — it only reads them if they're already exported
+# here, so `up` has to run after every export above, not before.
+docker compose up -d --wait
+```
+
+The exact same steps also live in [`scripts/grading-setup.sh`](scripts/grading-setup.sh),
+for re-running this without re-pasting it each time. It's a sequence of
+`export`s, so it must be **sourced** to leave those vars in your shell:
+
+```bash
+source scripts/grading-setup.sh
 ```
 
 ### HW #19 commands
@@ -1909,6 +2127,19 @@ npm run demo:ratelimit
 npm run demo:queue
 ```
 
+### HW #24 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -1937,6 +2168,9 @@ npm run demo:cache
 npm run demo:session
 npm run demo:ratelimit
 npm run demo:queue
+npm run demo:auth
+npm run demo:reuse
+npm run demo:rbac
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

@@ -81,6 +81,13 @@ export class CacheAsideService {
     return loader();
   }
 
+  // A write that bypasses the cache (an admin update, not a read miss)
+  // has to evict the stale entry itself — getOrLoad() only ever fills the
+  // cache, it has no way to know the DB underneath it just changed.
+  async invalidate(key: string): Promise<void> {
+    await this.logger.logErrorOrIgnore(() => this.redis.del(key));
+  }
+
   private async runAsLeader<T>(
     key: string,
     lockKey: string,

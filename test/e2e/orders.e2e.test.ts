@@ -3,6 +3,7 @@ import request from 'supertest';
 
 import { Inventory } from '../../src/entities/inventory.entity.ts';
 import { OrderItem } from '../../src/entities/order-item.entity.ts';
+import { User } from '../../src/entities/user.entity.ts';
 import { encodeCursor } from '../../src/utils/cursor.ts';
 import {
   anInventory,
@@ -16,6 +17,7 @@ import type { TestRedis } from '../integration/testkit/redis-container.ts';
 import { startTestRedis } from '../integration/testkit/redis-container.ts';
 
 import { startTestApp } from './testkit/app.ts';
+import { issueAccessToken } from './testkit/auth.ts';
 
 // Full Nest app (Test.createTestingModule({ imports: [AppModule] }), no
 // provider overrides), DB via testcontainers — the main feature
@@ -64,8 +66,18 @@ describe('Orders E2E (full Nest app, real postgres:17-alpine via testcontainers)
       items: [{ productId: product.id, quantity: 1 }],
     });
 
+    // GET /orders/:id is ownership-gated (HW#24 slice 3) — the order was
+    // created unauthenticated, so it's still attributed to the storefront
+    // placeholder customer; read that owner back to mint a token that
+    // actually matches it, rather than assuming which user it is.
+    const owner = await pg.dataSource.manager
+      .getRepository(User)
+      .findOneByOrFail({ id: created.body.user_id });
+    const token = issueAccessToken(app, owner);
+
     const fetched = await request(app.getHttpServer())
       .get(`/orders/${created.body.id}`)
+      .set('authorization', `Bearer ${token}`)
       .expect(200);
 
     expect(fetched.body).toEqual(created.body);
@@ -112,8 +124,18 @@ describe('Orders E2E (full Nest app, real postgres:17-alpine via testcontainers)
     );
   });
 
+  // Needs a token too, now that the route is AuthGuard-gated — without
+  // one this would 401 before OrderOwnershipGuard ever gets a chance to
+  // look the order up and report 404. Any authenticated caller works:
+  // the order doesn't exist, so ownership never enters into it.
   test('negative case: an unknown order id is a 404', async () => {
-    await request(app.getHttpServer()).get('/orders/999999').expect(404);
+    const user = await aUser().insertVia(pg.dataSource.manager);
+    const token = issueAccessToken(app, user);
+
+    await request(app.getHttpServer())
+      .get('/orders/999999')
+      .set('authorization', `Bearer ${token}`)
+      .expect(404);
   });
 
   // checkout()'s guarded balance UPDATE (WHERE balance_cents >= total)

@@ -84,17 +84,46 @@ export class OrdersService {
     return order ? toApiOrder(order) : undefined;
   }
 
-  // Lean lookup for OrderOwnershipGuard — only the two columns a WS join's
-  // ownership check needs, not the full items/product graph findById loads.
-  async getOwnerId(orderId: number): Promise<number | undefined> {
+  // For GET /orders/:orderId specifically — same query findById() already
+  // runs (ORDER_RELATIONS already joins the full user, uuid included), it
+  // just also hands the owner's uuid back alongside the response shape.
+  // That's what lets the controller check ownership against the resource
+  // it already loaded, in one query, instead of a guard doing its own
+  // separate lookup before the handler's own load — a guard has no
+  // resource-specific data to check against without querying for it
+  // itself, so a generic ownership guard would mean querying this order
+  // twice per request.
+  async findByIdForOwner(
+    id: number,
+  ): Promise<{ order: Order; ownerUuid: string } | undefined> {
+    const manager = await this.dataSourceService.getManager();
+    const order = await manager.getRepository(OrderEntity).findOne({
+      where: { id },
+      relations: ORDER_RELATIONS,
+    });
+
+    return order
+      ? { order: toApiOrder(order), ownerUuid: order.user.uuid }
+      : undefined;
+  }
+
+  // Lean lookup for OrderOwnershipGuard's remaining consumers — the SSE
+  // events stream and the WS join path, neither of which loads the order
+  // itself (nothing to attach an ownerUuid to, the way findByIdForOwner
+  // does above for the plain GET). Both the integer id (the WS path's
+  // still-placeholder comparison) and the uuid (SSE's real,
+  // verified-claims comparison) come from one query.
+  async getOwner(
+    orderId: number,
+  ): Promise<{ id: number; uuid: string } | undefined> {
     const manager = await this.dataSourceService.getManager();
     const order = await manager.getRepository(OrderEntity).findOne({
       where: { id: orderId },
       relations: { user: true },
-      select: { id: true, user: { id: true } },
+      select: { id: true, user: { id: true, uuid: true } },
     });
 
-    return order?.user.id;
+    return order?.user;
   }
 
   // HW#18's realtime status-change endpoint — no transition-validity rules
