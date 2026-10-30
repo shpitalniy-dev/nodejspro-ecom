@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
-import { ConfigModule } from '@nestjs/config';
+import { ConfigModule, ConfigService } from '@nestjs/config';
 
+import type { Env } from './config/env.schema.ts';
 import { validate } from './config/env.schema.ts';
 import { JwtKeysService } from './config/jwt-keys.ts';
 import { AccessDenylistService } from './controllers/auth/access-denylist.service.ts';
@@ -89,9 +90,11 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     },
     {
       provide: RefreshGraceCacheService,
-      useFactory: async (conn: QueueRedisConnection) =>
-        new RefreshGraceCacheService(await conn.getClient()),
-      inject: [QueueRedisConnection],
+      useFactory: async (
+        conn: QueueRedisConnection,
+        config: ConfigService<Env, true>,
+      ) => new RefreshGraceCacheService(await conn.getClient(), config),
+      inject: [QueueRedisConnection, ConfigService],
     },
   ],
   imports: [

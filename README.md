@@ -1898,6 +1898,15 @@ npm run demo:queue
   from); a loser outside it is genuine reuse, which revokes the _whole_
   family, including whatever the winner just issued one step ahead — that
   last part is what actually proves detection fired, not just rotation.
+  **The grace-cache entry is AES-256-GCM encrypted**, not plaintext — a
+  code-review catch: that cache has to hand the loser back the exact
+  same new refresh token (nothing to regenerate from), so unlike the
+  DB's `token_hash` column, hashing it isn't an option — a hash can
+  verify a token but can never reconstruct the secret it came from. The
+  key is derived from the same vaulted `REFRESH_TOKEN_PEPPER` via HKDF
+  with a distinct label, not a new secret — domain-separated from the
+  pepper's own HMAC use, so a Redis dump inside that 3s window is
+  ciphertext, not a live session.
 - **Refresh token lives only in a cookie** — `__Host-rt`, `httpOnly`,
   `Secure`, `SameSite=Strict`, no `Domain` (required by the `__Host-`
   prefix itself — the browser silently refuses the cookie otherwise).
