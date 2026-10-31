@@ -41,14 +41,27 @@ export class File {
   @Column({ name: 'status', type: 'text', default: 'pending' })
   status!: FileStatus;
 
-  // Only known once commit() reads it back via HeadObject.
+  // Only known once commit() reads it back via HeadObject — the verified
+  // fact, checked against declaredSize below.
   @Column({ name: 'size', type: 'bigint', nullable: true })
   size!: string | null;
 
-  // Unused by this slice — populated by the multipart slice's
-  // CreateMultipartUpload.
+  // The client's claimed size at intent time (now mandatory — see
+  // files.dto.ts). commit() rejects (422) if the real size doesn't match.
+  @Column({ name: 'declared_size', type: 'bigint' })
+  declaredSize!: string;
+
+  // Set by createIntent()'s multipart branch (size >= MULTIPART_THRESHOLD_BYTES).
   @Column({ name: 'upload_id', type: 'text', nullable: true })
   uploadId!: string | null;
+
+  // Multipart-only — null on single-PUT rows. resumeUpload() needs these to
+  // know "how many parts, how big" without the client repeating them.
+  @Column({ name: 'part_size', type: 'bigint', nullable: true })
+  partSize!: string | null;
+
+  @Column({ name: 'part_count', type: 'int', nullable: true })
+  partCount!: number | null;
 
   @Column({ name: 'content_type', type: 'text' })
   contentType!: string;

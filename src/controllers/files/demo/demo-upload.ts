@@ -71,6 +71,7 @@ async function main(): Promise<void> {
       headers: { ...authHeaders, 'content-type': 'application/json' },
       body: JSON.stringify({
         contentType: 'image/png',
+        size: PNG_1X1.length,
         // Deliberately malicious — proves the server never reads this
         // into the object key (see files.service.ts's createIntent()).
         filename: '../../etc/passwd',
@@ -118,7 +119,7 @@ async function main(): Promise<void> {
     const intent2Res = await fetch(`${app1.baseUrl}/uploads/intent`, {
       method: 'POST',
       headers: { ...authHeaders, 'content-type': 'application/json' },
-      body: JSON.stringify({ contentType: 'image/png' }),
+      body: JSON.stringify({ contentType: 'image/png', size: PNG_1X1.length }),
     });
     const intent2 = (await intent2Res.json()) as IntentResponse;
     intent2FileUuid = intent2.fileUuid;

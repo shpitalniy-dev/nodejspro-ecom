@@ -13,6 +13,7 @@
     "demo:crash-write": "bash scripts/with-secrets.sh dev node build/transactions/demo-crash-write.js",
     "demo:dlq": "bash scripts/with-secrets.sh dev node build/workers/fulfillment/demo/demo-dlq.js",
     "demo:duplicate": "bash scripts/with-secrets.sh dev node build/workers/fulfillment/demo/demo-duplicate.js",
+    "demo:multipart": "bash scripts/with-secrets.sh dev node build/controllers/files/demo/demo-multipart.js",
     "demo:nplus1": "bash scripts/with-secrets.sh dev node build/demo-nplus1.js",
     "demo:outbox": "bash scripts/with-secrets.sh dev node build/workers/relay/demo/demo-outbox.js",
     "demo:publish": "bash scripts/with-secrets.sh dev node build/workers/fulfillment/demo/demo-publish.js",

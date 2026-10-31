@@ -457,12 +457,15 @@ paths:
       operationId: createUploadIntent
       summary: Start a presigned upload (HW #26)
       description: >
-        Two-step upload contract: this issues a presigned PUT URL and a
-        pending files row; the client PUTs bytes straight to storage (no
-        bytes cross this API — see demo:upload's put-offline check), then
-        calls /uploads/commit. The object key is always server-generated
-        (uploads/{ownerUuid}/{uuid}.{ext}) — the client's filename, if
-        sent, is accepted for display only and never used to build it.
+        Two-step upload contract: this issues a presigned PUT URL (or,
+        when `size` is at/above the multipart threshold, a
+        CreateMultipartUpload id plus one presigned UploadPart URL per
+        part — see demo:multipart) and a pending files row; the client
+        PUTs bytes straight to storage (no bytes cross this API — see
+        demo:upload's put-offline check), then calls /uploads/commit. The
+        object key is always server-generated (uploads/{ownerUuid}/{uuid}.{ext})
+        — the client's filename, if sent, is accepted for display only and
+        never used to build it.
       tags:
         - uploads
       security:
@@ -499,18 +502,79 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /uploads/resume:
+    post:
+      operationId: resumeUpload
+      summary: Resume a multipart upload after a crash (HW #26)
+      description: >
+        ListParts against storage (never trusts anything the client
+        claims about which parts exist) and returns fresh presigned
+        UploadPart URLs for only the parts still missing — see
+        demo:multipart's resumed-parts check.
+      tags:
+        - uploads
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UploadResumeRequest'
+      responses:
+        '200':
+          description: Missing part upload URLs issued.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UploadResumeResponse'
+        '400':
+          description: Invalid request body.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: This upload belongs to another user.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: No upload with this fileUuid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '409':
+          description: This upload was never a multipart upload — nothing to resume.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
   /uploads/commit:
     post:
       operationId: commitUpload
       summary: Confirm a presigned upload actually landed in storage
       description: >
-        HeadObject against the key from /uploads/intent — without this,
-        a client could "commit" bytes it never uploaded. 409 means
-        exactly that: the row exists, but storage has no object for it.
-        422 means the opposite kind of mismatch: bytes did land, but
-        their magic-bytes signature doesn't match the contentType
-        declared at intent time — Content-Type headers (declared or
-        sent) aren't trustworthy on their own, only the bytes are.
+        For a single-PUT upload: HeadObject against the key from
+        /uploads/intent — without this, a client could "commit" bytes it
+        never uploaded. For a multipart upload: ListParts (authoritative —
+        never trusts client-supplied ETags) then CompleteMultipartUpload.
+        409 covers both "nothing was ever uploaded" and "not all parts are
+        up yet". 422 covers both kinds of declared-vs-actual mismatch, on
+        both paths: the uploaded bytes' magic-bytes signature not matching
+        the declared contentType (see files.utils.ts's
+        matchesMagicBytes()), or the real size not matching the size
+        declared at intent time — none of Content-Type, declared size, or
+        client-supplied ETags are trustworthy on their own.
       tags:
         - uploads
       security:
@@ -554,16 +618,19 @@ paths:
                 $ref: '#/components/schemas/Problem'
         '409':
           description: >
-            No object was ever PUT to this upload's key — nothing to
-            commit.
+            Single-PUT: no object was ever PUT to this upload's key.
+            Multipart: ListParts reports fewer parts than this upload's
+            partCount. Either way, nothing to commit yet.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/Problem'
         '422':
           description: >
-            The uploaded bytes' magic-bytes signature doesn't match the
-            contentType declared at intent time.
+            Either path: the uploaded bytes' magic-bytes signature doesn't
+            match the contentType declared at intent time, or the real,
+            storage-reported size doesn't match the size declared at
+            intent time.
           content:
             application/problem+json:
               schema:
@@ -794,6 +861,7 @@ components:
       additionalProperties: false
       required:
         - contentType
+        - size
       properties:
         contentType:
           type: string
@@ -801,18 +869,39 @@ components:
           description: >
             Allowlisted MIME type — determines the generated object key's
             extension.
+        size:
+          type: integer
+          minimum: 1
+          description: >
+            Declared file size in bytes. Decides single-PUT vs. multipart
+            (MULTIPART_THRESHOLD_BYTES in files.service.ts) and is checked
+            against the real, storage-reported size at /uploads/commit —
+            a mismatch there is a 422.
         filename:
           type: string
           description: >
             Accepted for display purposes only — never used to build the
             storage key (see files.service.ts's createIntent()).
 
+    UploadPart:
+      type: object
+      required:
+        - partNumber
+        - uploadUrl
+      properties:
+        partNumber:
+          type: integer
+          minimum: 1
+        uploadUrl:
+          type: string
+          format: uri
+          description: Presigned UploadPart URL for this part number.
+
     UploadIntentResponse:
       type: object
       required:
         - fileUuid
         - key
-        - uploadUrl
         - expiresIn
       properties:
         fileUuid:
@@ -826,11 +915,60 @@ components:
           format: uri
           description: >
             Presigned PUT URL — upload the file's bytes directly here,
-            then call /uploads/commit.
+            then call /uploads/commit. Present only when `size` was below
+            the multipart threshold; otherwise `uploadId`/`partSize`/`parts`
+            are present instead.
+        uploadId:
+          type: string
+          description: Multipart upload id (CreateMultipartUpload). Present only above the multipart threshold.
+        partSize:
+          type: integer
+          description: Bytes per part (computed — see files.utils.ts's computePartSize()). Present only above the multipart threshold.
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/UploadPart'
+          description: One presigned UploadPart URL per part number. Present only above the multipart threshold.
         expiresIn:
           type: integer
-          description: Seconds until uploadUrl expires.
+          description: Seconds until uploadUrl/parts[].uploadUrl expires.
           example: 300
+
+    UploadResumeRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - fileUuid
+      properties:
+        fileUuid:
+          type: string
+          format: uuid
+
+    UploadResumeResponse:
+      type: object
+      required:
+        - fileUuid
+        - key
+        - uploadId
+        - partSize
+        - parts
+      properties:
+        fileUuid:
+          type: string
+          format: uuid
+        key:
+          type: string
+        uploadId:
+          type: string
+        partSize:
+          type: integer
+        parts:
+          type: array
+          items:
+            $ref: '#/components/schemas/UploadPart'
+          description: >
+            Fresh presigned URLs for only the part numbers storage doesn't
+            already have (ListParts-backed) — not every part.
 
     UploadCommitRequest:
       type: object

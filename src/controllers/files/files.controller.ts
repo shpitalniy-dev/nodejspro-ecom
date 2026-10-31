@@ -18,7 +18,21 @@ export class FilesController {
     @Body() body: CreateUploadIntentDto,
     @CurrentUser() claims: AccessTokenClaims,
   ) {
-    return this.filesService.createIntent(claims.sub, body.contentType);
+    return this.filesService.createIntent(
+      claims.sub,
+      body.contentType,
+      body.size,
+    );
+  }
+
+  @Post('resume')
+  @HttpCode(200)
+  @UseGuards(AuthGuard)
+  async resume(
+    @Body() body: CommitUploadDto,
+    @CurrentUser() claims: AccessTokenClaims,
+  ) {
+    return this.filesService.resumeUpload(body.fileUuid, claims.sub);
   }
 
   @Post('commit')

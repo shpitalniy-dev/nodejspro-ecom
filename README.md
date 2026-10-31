@@ -2045,9 +2045,9 @@ npm run demo:rbac
 
 ## Object storage: presigned uploads | HW #26
 
-Status: `demo:upload` (presigned intent/commit) is done. `demo:multipart`
-and `demo:cdn` are still in progress and will land here, and in `## Files
-| HW #26` below, with their own slices.
+Status: `demo:upload` (presigned intent/commit) and `demo:multipart`
+(resumable multipart) are done. `demo:cdn` is still in progress and will
+land here, and in `## Files | HW #26` below, with its own slice.
 
 **Key decisions:**
 
@@ -2161,29 +2161,88 @@ and `demo:cdn` are still in progress and will land here, and in `## Files
   cleanup path needed, since anything left under `pending/` already
   self-expires via the lifecycle rule above, the same as any other
   abandoned upload.
+- **`size` is mandatory on `/uploads/intent`, and checked against reality
+  at `/uploads/commit`** — not just used to pick single-PUT vs. multipart.
+  The row stores it as `declaredSize`; `commit()` compares it to the real
+  `HeadObject`-reported size on both paths and rejects a mismatch with
+  `422` (same family as the magic-bytes mismatch — both are "declared
+  metadata didn't match what's actually there"). On the single-PUT path
+  this costs nothing extra (`HeadObject`'s response already carries
+  `ContentLength`, so it's a comparison, not a new request) and runs
+  before the magic-bytes check's ranged `GetObject` — cheapest rejection
+  first. On the multipart path it can only run _after_
+  `CompleteMultipartUpload` (the object doesn't exist before then), so a
+  mismatch there means cleaning up a real, now-completed object
+  (best-effort `DeleteObject`) before rejecting, not just refusing a
+  request.
+- **Multipart threshold and part size are computed, not hard-coded
+  constants** — `MULTIPART_THRESHOLD_BYTES` (8 MiB, chosen only to sit
+  above the part-size floor with headroom) decides single-PUT vs.
+  `CreateMultipartUpload`; `computePartSize()`
+  (`files.utils.ts`) is `max(5 MiB, ceil(size / 10 000))` — S3's own floor
+  (every part but the last) and ceiling (10 000 parts), so a large enough
+  file never ends up needing parts below the floor just to stay under the
+  part-count ceiling.
+- **Multipart's object key is the final `uploads/` key from the start —
+  no `pending/` staging, unlike the single-PUT path.** There's nothing to
+  stage around: `CompleteMultipartUpload` is what makes the object exist
+  at all (`HeadObject` on the key 404s until then, even with parts already
+  physically on the server — see `demo:multipart`'s `head-before-complete`
+  check), so an abandoned multipart upload never produces a readable
+  object under `uploads/`. Garage's `AbortIncompleteMultipartUpload`
+  lifecycle rule (above) is the cleanup layer for that case instead.
+- **`POST /uploads/resume`, not the client calling `ListParts` directly** —
+  raw storage credentials never reach the client anywhere else in this
+  codebase (that's the entire reason `/uploads/intent` exists instead of
+  handing out static keys), so resumption keeps that invariant: the
+  server does `ListPartsCommand` and returns fresh presigned
+  `UploadPartCommand` URLs for only the missing part numbers. `commit()`
+  re-reads the authoritative part/ETag list itself via `ListParts` right
+  before completing — nothing the client claims about parts or ETags is
+  ever trusted for completion either.
+- **Magic-bytes verification applies to both commit paths, not just
+  single-PUT.** The check (ranged `GetObject` on the completed object's
+  first bytes) is oblivious to how the object got assembled — one PUT or
+  many `UploadPart`s — so there's no reason multipart should be the one
+  path where a declared `contentType` goes unverified; the threat is
+  identical either way. It runs after the declared-size check (same
+  "cheapest rejection first" ordering as single-PUT) and, on the
+  multipart path, after `CompleteMultipartUpload` has already made the
+  object exist — so a mismatch there means cleaning up a real, completed
+  object (best-effort `DeleteObject`), same as a size mismatch does.
+  `demo:multipart`'s test buffer carries a real PNG signature in its
+  first 8 bytes for exactly this reason — the rest stays random padding,
+  since the check only ever reads the first 12 bytes.
 
 ### Measured runs
 
-| Demo          | Output                                                                                                                  | Exit |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
-| `demo:upload` | `intent=200 key-from-server=1 api-alive=0 put-offline=200 commit=200 commit-without-bytes=409 tampered=403 expired=403` | 0    |
+| Demo             | Output                                                                                                                  | Exit |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:upload`    | `intent=200 key-from-server=1 api-alive=0 put-offline=200 commit=200 commit-without-bytes=409 tampered=403 expired=403` | 0    |
+| `demo:multipart` | `head-before-complete=404 resumed-parts=1 complete=200 size-match=1 etag-multipart=1`                                   | 0    |
 
-Run twice in a row (and again from a `docker compose down -v` fresh
+Both run twice in a row (and again from a `docker compose down -v` fresh
 volume) with identical output both times, and confirmed empty storage +
 `files` table after each run — self-cleanup, not just a lucky absence of
-leftover state.
+leftover state. `demo:multipart` doesn't need any special-cased cleanup
+_at the start_ to pass twice — every run's object key is a fresh
+`randomUUID()` (inherited from the single-PUT path's own design), so a
+second run can never see the first run's object regardless; the `finally`
+block still deletes the row+object at the end of every run so nothing
+accumulates over many runs.
 
 ### Running the demos
 
 ```bash
 npm run demo:upload
+npm run demo:multipart
 ```
 
 ## Files | HW #26
 
-The homework's own required section. Status: covers setup and
-`demo:upload` fully; the CDN-form/bucket-policy/multipart-threshold items
-below land with their own slices (`demo:multipart`, `demo:cdn`).
+The homework's own required section. Status: covers setup, `demo:upload`,
+and `demo:multipart` fully; the CDN-form/bucket-policy items below land
+with `demo:cdn`'s own slice.
 
 ### Environment variables
 
@@ -2212,15 +2271,27 @@ URL carries no identifier a store could key on), so short TTL is the only
 lever that actually works here. See this doc's `## Object storage |
 HW #26` section for the full reasoning.
 
-### CDN form, bucket policy, multipart threshold/part size
+### Multipart threshold and part size
 
-Not decided yet — land with `demo:cdn`/`demo:multipart`, whichever comes
-first.
+- **Threshold: `MULTIPART_THRESHOLD_BYTES = 8 MiB`** (`files.service.ts`)
+  — at/above this, `/uploads/intent` does `CreateMultipartUpload` instead
+  of a single presigned PUT. Not load-bearing on any grading key — chosen
+  only to sit above the part-size floor below with headroom.
+- **Part size: `computePartSize(size) = max(5 MiB, ceil(size / 10 000))`**
+  (`files.utils.ts`) — computed per upload, not a constant. S3's own
+  ceiling is 10 000 parts per upload, so a large enough file would need
+  parts below S3's own 5 MiB floor (every part but the last) just to stay
+  under that ceiling if part size were fixed; this formula keeps both
+  constraints satisfied without picking one over the other by hand.
+
+### CDN form, bucket policy
+
+Not decided yet — land with `demo:cdn`'s own slice.
 
 ### Own measured numbers
 
-See `## Object storage | HW #26` → `### Measured runs` — `demo:upload`'s
-own contract line, confirmed identical across two consecutive runs and a
+See `## Object storage | HW #26` → `### Measured runs` — both demos'
+contract lines, confirmed identical across two consecutive runs and a
 third run from a genuinely fresh `docker compose down -v` volume.
 
 ## Grading
@@ -2342,6 +2413,7 @@ npm run build
 npm run migrate
 npm run seed
 npm run demo:upload
+npm run demo:multipart
 ```
 
 ### Cumulative commands
@@ -2376,6 +2448,7 @@ npm run demo:auth
 npm run demo:reuse
 npm run demo:rbac
 npm run demo:upload
+npm run demo:multipart
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh
