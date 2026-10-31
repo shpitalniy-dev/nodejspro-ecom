@@ -2043,6 +2043,386 @@ npm run demo:reuse
 npm run demo:rbac
 ```
 
+## Object storage: presigned uploads | HW #26
+
+Status: all three required demos are done — `demo:upload` (presigned
+intent/commit), `demo:multipart` (resumable multipart), and `demo:cdn`
+(closed bucket, cache in front, no invalidation).
+
+**Key decisions:**
+
+- **Garage, not MinIO** — MinIO pulled `minio/minio`/`minio/mc` off Docker
+  Hub on 2026-09-11, so the previously-standard image no longer pulls on
+  a clean machine. Garage is S3-API-compatible (presigned URLs, multipart,
+  `forcePathStyle` all work the same) and its image is still published.
+  Nothing in the app code is Garage-specific — real S3, LocalStack, or R2
+  would work by changing `STORAGE_ENDPOINT` alone.
+- **Two-step upload contract**: `POST /uploads/intent` validates the
+  caller (`AuthGuard`) and `contentType` (allowlist), generates the
+  object key **server-side** (the client's own `filename`, if sent, is
+  accepted for display only and never read into the key path), and
+  returns a presigned PUT URL. The client PUTs bytes **directly to
+  storage** — zero bytes cross this API. `POST /uploads/commit` then does
+  a `HeadObject` before marking the row `completed`, so a client can't
+  "commit" an upload that never happened (`commit-without-bytes` → `409`).
+- **Presigned PUTs target a `pending/` staging key, not the final
+  `uploads/` one** (`pending/{ownerUuid}/{uuid}.{ext}` →
+  `uploads/{ownerUuid}/{uuid}.{ext}`, same uuid). `commit()` moves it
+  (`CopyObjectCommand` + `DeleteObjectCommand`, a server-side copy — no
+  bytes re-uploaded through us) only after the DB row is updated to
+  `completed`, not before: if the process died between the copy and the
+  DB write, the staging copy is still under `pending/` and the lifecycle
+  rule below cleans it up anyway, but a final-prefix orphan from the
+  other ordering would have no expiring prefix to catch it. This is what
+  makes the lifecycle rule below _safe_ to apply — nothing under
+  `uploads/` is ever something a client PUT directly, so nothing there is
+  ever a candidate for automatic expiry.
+  🔴 **Copy, not a tag** — the lighter-weight version of this pattern
+  tags an object `status=pending` at upload time (bake `Tagging` into the
+  presigned PUT) and `commit()` just flips/removes the tag — no data
+  movement at all, and on real AWS S3 (or MinIO) a lifecycle rule can
+  filter on that tag directly. **Garage v2.1.0 doesn't support object
+  tagging** — confirmed empirically, not assumed: `GetObjectTagging`
+  returns a flat `501 NotImplemented`, and the admin API's own lifecycle
+  `Filter` schema has no `Tag` field to begin with (only `Prefix` and the
+  two `ObjectSize*` bounds). The copy-based design here exists because
+  it's the only one this specific backend can actually support — if this
+  project ever points at real S3, the tag-based version is worth
+  reconsidering as the more idiomatic (and cheaper) choice there.
+- **Presigned TTL = 300 seconds**, not "7 days because the signing scheme
+  allows it" — chosen for the actual scenario (a form upload: avatar,
+  product photo — a minutes-long window, not a long-lived link). SigV4's
+  own hard ceiling is 7 days, but a presigned URL this long-lived is a
+  bearer credential with no revocation mechanism (see HW #24's denylist
+  work — none of its four strategies apply here, since a presigned URL
+  carries no identifier). Short TTL is the only lever that actually
+  works, same principle as #24's own short-TTL-over-denylist choice.
+- **Garage's access key is `ImportKey`'d, not `CreateKey`'d** — we choose
+  `STORAGE_ACCESS_KEY`/`STORAGE_SECRET_KEY` ourselves (same way
+  `REFRESH_TOKEN_PEPPER` is generated, see HW #24) and tell Garage to
+  accept that exact value, rather than letting Garage mint a random one
+  and needing a side channel to retrieve it. That keeps the credential on
+  the same path every other secret here already uses: generated once →
+  `.env`/Infisical → `with-secrets.sh` for host-side scripts, bare
+  passthrough for the `api` container. Nothing Garage-generated ever
+  needs to travel anywhere.
+- **`garage-init`, a one-shot provisioning service** (`docker-compose.yml`,
+  same shape as `db-password-seed`) assigns the cluster layout, creates
+  the bucket, imports the key, grants it, and sets a bucket lifecycle
+  rule — all idempotently, on every `docker compose up -d --wait`, zero
+  manual steps. It builds from this project's own `Dockerfile`'s `deps`
+  stage (cache-shared with `api`'s own build, not a second image) and
+  bind-mounts only the script itself — never `node_modules` — since a
+  grader's `npm ci` runs _after_ `docker compose up -d --wait`, not
+  before (see this doc's own `## Grading` example), so a bind-mounted
+  `node_modules` would be empty exactly when it mattered.
+- **Two lifecycle rules on `hw26-uploads`**, applied by `garage-init`:
+  `AbortIncompleteMultipartUpload` after 7 days (an abandoned multipart
+  upload is billed forever and invisible to a plain object listing —
+  `Expiration` rules don't touch it, it's a different action), and
+  `Expiration` after 1 day scoped to the `pending/` prefix only (a client
+  that PUTs bytes and then abandons the flow — closes the tab, loses the
+  network, never calls `commit()` — leaves exactly that: real bytes, a
+  row that never reaches `completed`; this is what actually cleans it up,
+  independent of any app code running). The prefix scoping is what makes
+  the second rule safe to apply at all — a blanket `Expiration` would
+  eventually delete legitimate, long-kept files too, since nothing in a
+  bare key distinguishes "committed" from "abandoned" without it.
+  🔴 Honest boundary hit while building this: Garage v2.1.0's admin API
+  accepts `lifecycleRules` on `UpdateBucket` (it's in the current OpenAPI
+  spec) but silently ignores it — confirmed by testing against the
+  running container, not assumed from the docs; that field is documented
+  for a later admin API version than this image actually runs. Both
+  rules are applied via the real, working path instead: the S3-protocol
+  `PutBucketLifecycleConfiguration` call (SigV4-signed), confirmed to
+  persist via `GetBucketLifecycleConfiguration` read-back.
+- **No secret lives in a tracked file.** `garage/garage.toml` is
+  committed with no `rpc_secret`/`admin_token` — Garage reads both
+  natively from `GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` (supported since
+  v0.8.2), generated once and sourced the same way as every other secret
+  here, not hardcoded in a file git tracks.
+- **Ownership on commit, not a guard** — `commit()` loads the row, then
+  compares `row.owner.uuid` to the caller's JWT subject, same
+  check-after-load pattern HW #24 settled on for order ownership (a
+  guard has nothing to compare against before the resource is loaded).
+- **`commit()` verifies magic bytes against the declared `contentType`,
+  not any Content-Type header** — verified empirically, not assumed: a
+  presigned PUT's `ContentType` parameter isn't part of what SigV4 signs
+  (`X-Amz-SignedHeaders=host` only) and has zero effect on what ends up
+  stored — three live PUTs to the same presigned URL with no
+  Content-Type header, a mismatched one, and a matching one landed with
+  `undefined`, the mismatched one, and the matching one respectively as
+  the stored metadata. None of that is trustworthy input for a check, so
+  `commit()` instead does a ranged `GetObject` (`bytes=0-11`, enough to
+  cover PNG/JPEG/WEBP's signatures — Garage's ranged-GET support
+  confirmed working, not assumed) and compares the real bytes against
+  the content-type declared at `/uploads/intent` time. A mismatch is
+  `422`, and the row/object are left exactly as they are — no new
+  cleanup path needed, since anything left under `pending/` already
+  self-expires via the lifecycle rule above, the same as any other
+  abandoned upload.
+- **`size` is mandatory on `/uploads/intent`, and checked against reality
+  at `/uploads/commit`** — not just used to pick single-PUT vs. multipart.
+  The row stores it as `declaredSize`; `commit()` compares it to the real
+  `HeadObject`-reported size on both paths and rejects a mismatch with
+  `422` (same family as the magic-bytes mismatch — both are "declared
+  metadata didn't match what's actually there"). On the single-PUT path
+  this costs nothing extra (`HeadObject`'s response already carries
+  `ContentLength`, so it's a comparison, not a new request) and runs
+  before the magic-bytes check's ranged `GetObject` — cheapest rejection
+  first. On the multipart path it can only run _after_
+  `CompleteMultipartUpload` (the object doesn't exist before then), so a
+  mismatch there means cleaning up a real, now-completed object
+  (best-effort `DeleteObject`) before rejecting, not just refusing a
+  request.
+- **Multipart threshold and part size are computed, not hard-coded
+  constants** — `MULTIPART_THRESHOLD_BYTES` (8 MiB, chosen only to sit
+  above the part-size floor with headroom) decides single-PUT vs.
+  `CreateMultipartUpload`; `computePartSize()`
+  (`files.utils.ts`) is `max(5 MiB, ceil(size / 10 000))` — S3's own floor
+  (every part but the last) and ceiling (10 000 parts), so a large enough
+  file never ends up needing parts below the floor just to stay under the
+  part-count ceiling.
+- **Multipart's object key is the final `uploads/` key from the start —
+  no `pending/` staging, unlike the single-PUT path.** There's nothing to
+  stage around: `CompleteMultipartUpload` is what makes the object exist
+  at all (`HeadObject` on the key 404s until then, even with parts already
+  physically on the server — see `demo:multipart`'s `head-before-complete`
+  check), so an abandoned multipart upload never produces a readable
+  object under `uploads/`. Garage's `AbortIncompleteMultipartUpload`
+  lifecycle rule (above) is the cleanup layer for that case instead.
+- **`POST /uploads/resume`, not the client calling `ListParts` directly** —
+  raw storage credentials never reach the client anywhere else in this
+  codebase (that's the entire reason `/uploads/intent` exists instead of
+  handing out static keys), so resumption keeps that invariant: the
+  server does `ListPartsCommand` and returns fresh presigned
+  `UploadPartCommand` URLs for only the missing part numbers. `commit()`
+  re-reads the authoritative part/ETag list itself via `ListParts` right
+  before completing — nothing the client claims about parts or ETags is
+  ever trusted for completion either.
+- **Magic-bytes verification applies to both commit paths, not just
+  single-PUT.** The check (ranged `GetObject` on the completed object's
+  first bytes) is oblivious to how the object got assembled — one PUT or
+  many `UploadPart`s — so there's no reason multipart should be the one
+  path where a declared `contentType` goes unverified; the threat is
+  identical either way. It runs after the declared-size check (same
+  "cheapest rejection first" ordering as single-PUT) and, on the
+  multipart path, after `CompleteMultipartUpload` has already made the
+  object exist — so a mismatch there means cleaning up a real, completed
+  object (best-effort `DeleteObject`), same as a size mismatch does.
+  `demo:multipart`'s test buffer carries a real PNG signature in its
+  first 8 bytes for exactly this reason — the rest stays random padding,
+  since the check only ever reads the first 12 bytes.
+- **The "edge" is a small Nest service that reads storage with real
+  credentials, not nginx reverse-proxying a public endpoint.** The
+  lecture's own edge-cache demo (`26_FilesS3Cdn/src/05-edge-cache.ts`,
+  `edge/nginx.conf`) is `nginx` + `proxy_cache` in front of a **publicly
+  readable** bucket — it works because the origin already serves
+  anonymously, which is the opposite of this slice's `direct=403`
+  requirement. The fix the homework names directly: the cache has to
+  fetch "via a few lines that go to storage with an SDK client," not
+  `proxy_pass`. `AssetsService` does exactly that
+  (`GetObjectCommand`/`S3ClientService`, the same credentialed client
+  every other slice already uses) — the Garage-compatible version of the
+  same principle CloudFront's OAC implements with a bucket policy: nothing
+  reads the bucket anonymously, only one credentialed party does, and the
+  public only ever talks to that party.
+- **A second bucket, `hw26-assets`, separate from `hw26-uploads`.** The
+  weaker reason is lifecycle hygiene: `scripts/garage-init.mjs` sets the
+  abort-incomplete-multipart/expire-pending rules only on `hw26-uploads` —
+  `hw26-assets` never sees a multipart upload or a `pending/` key, so
+  there's nothing there for either rule to clean up (though this alone
+  wouldn't _require_ two buckets — a lifecycle rule's own `Filter.Prefix`
+  could scope it within one bucket just as well).
+  The real reason is security blast radius, and it's sharper on Garage
+  than the generic "never mix public and private data in one bucket"
+  advice would suggest: real AWS S3 can scope an IAM/bucket policy to a
+  prefix (`Resource: "arn:aws:s3:::bucket/assets/*"`), so on AWS a single
+  -bucket-with-prefixes design is also a legitimate choice. **Garage can't
+  do that at all** — `AllowBucketKey`'s grant (`{read, write, owner}`) is
+  bucket-level only, with no prefix scoping whatsoever. One bucket would
+  mean the edge cache's read path and the private-upload path share the
+  exact same key with the exact same bucket-wide grant — no policy, no
+  mechanism, nothing would stand between "the public cache can read this"
+  and "this is someone's private upload." On this backend specifically,
+  the bucket boundary isn't reinforcing an existing security boundary,
+  it's the only one available.
+- **The edge cache is Redis (reusing HW #23's `CacheRedisConnection`), not
+  an in-memory `Map`.** An in-memory cache is invisible to every other
+  replica of this API — the moment this runs behind more than one
+  instance, a request landing on a different process would miss even
+  though another process already fetched and cached the exact same
+  object. What still makes this "an edge cache" and not just "HW #23's
+  cache again" isn't the storage technology, it's the invalidation story:
+  `CacheAsideService` has an `invalidate()` that issues `redis.del()`
+  because the thing it caches (a DB row) can change under a fixed key.
+  `AssetsService` has no equivalent — a content-hashed key is only ever
+  superseded by a _different_ key, never updated in place, so there's no
+  write path that ever needs to evict one.
+  🔴 **Known limitation, not hidden**: `get()` caches the full object body
+  in Redis (see `assets.service.ts`'s own comment there). Fine for what
+  this slice actually publishes — small, hot, infrequently-updated static
+  assets, the realistic case for a Redis-backed cache — but it doesn't
+  scale to large media the way a real CDN edge does: Redis is in-memory,
+  so every cached asset's bytes compete for RAM against everything else
+  sharing this same connection (HW #23's rate limiter, sessions, product
+  cache), where a real CDN's edge nodes are disk-backed specifically so
+  object size isn't a RAM-budget problem. A production version serving
+  large files should cap what this cache will hold by size, or not put a
+  Redis tier in front of large media at all.
+- **Content-hash naming is the entire "update without invalidation"
+  mechanism** — `publish(name, content, contentType, ext)`
+  (`createHash('sha256')`, first 8 hex chars) names the object
+  `${name}.<hash>.<ext>` (`name` is the caller's own logical asset name —
+  `app`, `vendor`, whichever — so two different assets never collide into
+  the same pattern just because they share an extension, the same shape a
+  real bundler's own content-hashed output uses). New content is a new
+  key; the **origin object** for an old key is never deleted or expired by
+  anything in this service (no lifecycle rule on `hw26-assets`), so it
+  keeps serving the old bytes indefinitely — that's a different claim from
+  the **cache copy**, which does expire after its own TTL (the asset's
+  declared `max-age`, one year) and then just re-fetches from the
+  still-intact origin on the next request, it doesn't mean the old version
+  became unavailable. `demo:cdn`'s cleanup deletes both the storage object
+  and the Redis entry it published (`redis.del` on the asset's cache key,
+  alongside the `DeleteObjectCommand`) at the end of every run — that's
+  demo hygiene so repeated runs don't accumulate junk in either store, not
+  a simulation of real expiration; nothing removes a _real_ published
+  asset this way. `demo:cdn`'s own spot-check (swap the hash for a fixed
+  string, confirm `new-name`/`content-changed` both flip from 1 to 0 and
+  the run fails) is what confirms the no-invalidation claim is actually
+  being tested, not just asserted.
+- **Direct anonymous access already gives exactly `403`, confirmed
+  against the real container** — `AccessDenied: Forbidden: Garage does
+not support anonymous access yet`. Unlike AWS S3 (private by default,
+  but a bucket policy _can_ open it up) or the tagging/lifecycle gaps
+  already documented above, this one needed no configuration at all:
+  Garage's S3 API simply never serves an anonymous request.
+
+### Measured runs
+
+| Demo             | Output                                                                                                                  | Exit |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:upload`    | `intent=200 key-from-server=1 api-alive=0 put-offline=200 commit=200 commit-without-bytes=409 tampered=403 expired=403` | 0    |
+| `demo:multipart` | `head-before-complete=404 resumed-parts=1 complete=200 size-match=1 etag-multipart=1`                                   | 0    |
+| `demo:cdn`       | `direct=403 edge-miss=200 edge-hit=200 cache-hit=1 new-name=1 new-url=200 content-changed=1`                            | 0    |
+
+All three run twice in a row (and again from a `docker compose down -v`
+fresh volume) with identical output both times, and confirmed empty
+storage + `files` table after each run — self-cleanup, not just a lucky
+absence of leftover state. `demo:multipart`/`demo:cdn` don't need any
+special-cased cleanup _at the start_ to pass twice — every run's object
+key is either a fresh `randomUUID()` or content-derived from
+run-randomized content, so a second run can never see the first run's
+object regardless; the `finally` block in each still deletes what it
+created at the end of every run so nothing accumulates over many runs.
+
+### Running the demos
+
+```bash
+npm run demo:upload
+npm run demo:multipart
+npm run demo:cdn
+```
+
+## Files | HW #26
+
+The homework's own required section. Status: covers setup and all three
+demos fully.
+
+### Environment variables
+
+| Variable                 | Джерело                               | Навіщо                                                                                                                     |
+| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
+| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
+| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
+| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                                                     |
+| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                                                                   |
+| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)                 | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
+| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
+| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
+
+`GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` aren't in `src/config/env.schema.ts`
+on purpose — the NestJS app never reads them, only the `garage` container
+and `scripts/garage-init.mjs` do, so they're out of scope for
+`check-env-example.js`'s app-schema-sync check.
+
+### Presigned URL lifetime
+
+300 seconds, chosen for the actual scenario this bucket serves (a form
+upload — avatar, product photo), not "7 days because SigV4 allows it." A
+long-lived presigned URL is a bearer credential with no revocation
+mechanism (none of HW #24's four denylist strategies apply — a presigned
+URL carries no identifier a store could key on), so short TTL is the only
+lever that actually works here. See this doc's `## Object storage |
+HW #26` section for the full reasoning.
+
+### Multipart threshold and part size
+
+- **Threshold: `MULTIPART_THRESHOLD_BYTES = 8 MiB`** (`files.service.ts`)
+  — at/above this, `/uploads/intent` does `CreateMultipartUpload` instead
+  of a single presigned PUT. Not load-bearing on any grading key — chosen
+  only to sit above the part-size floor below with headroom.
+- **Part size: `computePartSize(size) = max(5 MiB, ceil(size / 10 000))`**
+  (`files.utils.ts`) — computed per upload, not a constant. S3's own
+  ceiling is 10 000 parts per upload, so a large enough file would need
+  parts below S3's own 5 MiB floor (every part but the last) just to stay
+  under that ceiling if part size were fixed; this formula keeps both
+  constraints satisfied without picking one over the other by hand.
+
+### CDN form, bucket policy
+
+**Form chosen: local authenticated edge** (`AssetsService`/`AssetsController`,
+`GET /assets/:key`), not real CloudFront — no AWS account, same
+constraint every other slice's storage choice has already made. It reads
+`STORAGE_BUCKET_ASSETS` with real storage credentials
+(`GetObjectCommand`/`S3ClientService`) and caches in Redis, never via a
+reverse proxy in front of an anonymously-readable origin — see Object
+storage's own "Key decisions" for why that distinction matters here.
+
+**Bucket policy** — written for the real-AWS/OAC-equivalent variant, even
+though it's never applied on Garage (which has no bucket-policy API at
+all; see below):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontOAC",
+      "Effect": "Allow",
+      "Principal": { "Service": "cloudfront.amazonaws.com" },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::hw26-assets/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID"
+        }
+      }
+    }
+  ]
+}
+```
+
+The `Condition` on `AWS:SourceArn` isn't optional decoration — without
+it, this policy authorizes _every_ CloudFront distribution in existence
+to read the bucket, not just this project's own one.
+
+🔴 **Garage has no bucket-policy API at all** (`PutBucketPolicy` →
+`501 NotImplemented`, the same honesty-boundary already hit with object
+tagging above) — so on this backend, "closed bucket" isn't a policy
+decision, it's the unconditional default: confirmed against the real
+container, an anonymous GET returns `403 AccessDenied: Forbidden: Garage
+does not support anonymous access yet`, with no configuration required to
+get there.
+
+### Own measured numbers
+
+See `## Object storage | HW #26` → `### Measured runs` — all three demos'
+contract lines, confirmed identical across two consecutive runs and a
+third run from a genuinely fresh `docker compose down -v` volume.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -2072,6 +2452,20 @@ export JWT_KID=grader
 export JWT_PRIVATE_KEY="$(cat /tmp/jwt-priv.b64)"
 export JWT_PUBLIC_KEY="$(cat /tmp/jwt-pub.b64)"
 export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
+
+# HW #26 — object storage (Garage). ACCESS_KEY/SECRET_KEY are ours to
+# choose (ImportKey, not CreateKey — see Object storage | HW #26's own
+# "Key decisions"), same throwaway-per-run shape as JWT_PRIVATE_KEY above.
+export STORAGE_ENDPOINT=http://127.0.0.1:6600
+export STORAGE_BUCKET_UPLOADS=hw26-uploads
+export STORAGE_BUCKET_ASSETS=hw26-assets
+# Garage enforces the key-ID shape: GK + 12 hex-encoded bytes.
+export STORAGE_ACCESS_KEY="GK$(node -e "console.log(require('node:crypto').randomBytes(12).toString('hex'))")"
+export STORAGE_SECRET_KEY="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+# Read natively by the garage binary itself, not this project's code — see
+# garage/garage.toml's own comment on why they're not in that committed file.
+export GARAGE_RPC_SECRET="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
+export GARAGE_ADMIN_TOKEN="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('base64'))")"
 
 # docker-compose.yml passes these through to `api` by bare-name passthrough
 # (see its own comment) — it only reads them if they're already exported
@@ -2140,6 +2534,19 @@ npm run demo:reuse
 npm run demo:rbac
 ```
 
+### HW #26 commands
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:upload
+npm run demo:multipart
+npm run demo:cdn
+```
+
 ### Cumulative commands
 
 The course's earlier checks, in the same order. They run in the same shell as the setup.
@@ -2171,6 +2578,9 @@ npm run demo:queue
 npm run demo:auth
 npm run demo:reuse
 npm run demo:rbac
+npm run demo:upload
+npm run demo:multipart
+npm run demo:cdn
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

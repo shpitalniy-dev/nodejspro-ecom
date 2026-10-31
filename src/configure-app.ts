@@ -30,7 +30,9 @@ export function configureApp(app: NestExpressApplication): void {
       // against a schema — fundamentally incompatible with an SSE stream
       // that's designed to never end. Excluded here rather than silently
       // left unvalidated by omission.
-      ignorePaths: /^\/health|^\/orders\/\d+\/events$/,
+      // /assets/:key (HW#26 demo:cdn): raw bytes with a per-asset
+      // content-type, not a JSON resource this spec's schemas describe.
+      ignorePaths: /^\/health|^\/orders\/\d+\/events$|^\/assets\//,
     }),
   );
 
