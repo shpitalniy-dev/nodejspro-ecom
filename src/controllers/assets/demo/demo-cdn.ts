@@ -5,9 +5,11 @@ import { ConfigService } from '@nestjs/config';
 import { randomUUID } from 'node:crypto';
 
 import type { Env } from '../../../config/env.schema.ts';
+import { CacheRedisConnection } from '../../../services/redis/cache-redis-connection.service.ts';
 import { S3ClientService } from '../../../services/storage/s3-client.service.ts';
 import { startDemoApp } from '../../auth/demo/demo.utils.ts';
 import { AssetsService } from '../assets.service.ts';
+import { assetCacheKey } from '../assets.utils.ts';
 
 // demo:cdn — closed bucket, cache in front, no invalidation (HW #26,
 // slice 3). Proves two things a half-measure can't: a direct, anonymous
@@ -95,13 +97,14 @@ async function main(): Promise<void> {
       process.exitCode = 1;
     }
   } finally {
-    const results = await Promise.allSettled(
-      [keyA, keyB]
-        .filter((key): key is string => key !== undefined)
-        .map(key =>
-          s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
-        ),
-    );
+    const keys = [keyA, keyB].filter((key): key is string => key !== undefined);
+    const redis = await app.app.get(CacheRedisConnection).getClient();
+    const results = await Promise.allSettled([
+      ...keys.map(key =>
+        s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: key })),
+      ),
+      ...(keys.length > 0 ? [redis.del(...keys.map(assetCacheKey))] : []),
+    ]);
 
     for (const result of results) {
       if (result.status === 'rejected') {
