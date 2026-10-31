@@ -76,6 +76,7 @@ services:
       STORAGE_ACCESS_KEY:
       STORAGE_SECRET_KEY:
       STORAGE_BUCKET_UPLOADS:
+      STORAGE_BUCKET_ASSETS:
     # HW #13 deliberately skipped wiring api up to the real infisical-agent
     # (below, profile: rotation) so grading with no vault access wouldn't
     # depend on it — that decision was about not requiring vault access,

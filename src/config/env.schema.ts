@@ -56,6 +56,11 @@ export const envSchema = z.object({
   STORAGE_ACCESS_KEY: z.string().min(1),
   STORAGE_SECRET_KEY: z.string().min(1),
   STORAGE_BUCKET_UPLOADS: z.string().min(1),
+  // Separate from STORAGE_BUCKET_UPLOADS on purpose (HW #26 slice 3) —
+  // public-through-the-cache CDN assets and private user uploads have
+  // different lifecycles, and mixing them would blur the "closed bucket,
+  // open cache" story. See assets.service.ts.
+  STORAGE_BUCKET_ASSETS: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;

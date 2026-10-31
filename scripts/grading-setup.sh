@@ -27,6 +27,7 @@ export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').rando
 # throwaway-per-run shape as JWT_PRIVATE_KEY/REFRESH_TOKEN_PEPPER above.
 export STORAGE_ENDPOINT=http://127.0.0.1:6600
 export STORAGE_BUCKET_UPLOADS=hw26-uploads
+export STORAGE_BUCKET_ASSETS=hw26-assets
 # Garage enforces the key-ID shape: GK + 12 hex-encoded bytes.
 export STORAGE_ACCESS_KEY="GK$(node -e "console.log(require('node:crypto').randomBytes(12).toString('hex'))")"
 export STORAGE_SECRET_KEY="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"

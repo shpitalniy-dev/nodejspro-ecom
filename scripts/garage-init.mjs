@@ -53,7 +53,10 @@ function requireEnv(name) {
 
 const ADMIN_URL = process.env.GARAGE_ADMIN_URL ?? 'http://127.0.0.1:6601';
 const ADMIN_TOKEN = requireEnv('GARAGE_ADMIN_TOKEN');
-const BUCKET_ALIAS = 'hw26-uploads';
+// hw26-assets (HW #26 slice 3, demo:cdn) gets no lifecycle rule below —
+// unlike pending/ staging objects, a published asset is never
+// "abandoned", so there's nothing here for a storage-level timer to clean.
+const BUCKET_ALIASES = ['hw26-uploads', 'hw26-assets'];
 const KEY_NAME = 'hw26-key';
 
 const accessKeyId = requireEnv('STORAGE_ACCESS_KEY');
@@ -111,17 +114,29 @@ for (let attempt = 1; ; attempt += 1) {
   }
 }
 
-// ─── 2 · bucket ─────────────────────────────────────────────────────────
-const buckets = await call('GET', '/v2/ListBuckets');
-let bucket = buckets.find(b => b.globalAliases.includes(BUCKET_ALIAS));
+// ─── 2 · buckets ────────────────────────────────────────────────────────
+async function ensureBucket(alias) {
+  const buckets = await call('GET', '/v2/ListBuckets');
+  const existing = buckets.find(b => b.globalAliases.includes(alias));
 
-if (bucket) {
-  log(`bucket ${BUCKET_ALIAS} already exists`);
-} else {
-  bucket = await call('POST', '/v2/CreateBucket', {
-    globalAlias: BUCKET_ALIAS,
+  if (existing) {
+    log(`bucket ${alias} already exists`);
+
+    return existing;
+  }
+
+  const created = await call('POST', '/v2/CreateBucket', {
+    globalAlias: alias,
   });
-  log(`bucket ${BUCKET_ALIAS} created`);
+  log(`bucket ${alias} created`);
+
+  return created;
+}
+
+const buckets = [];
+
+for (const alias of BUCKET_ALIASES) {
+  buckets.push(await ensureBucket(alias));
 }
 
 // ─── 3 · our chosen access key ──────────────────────────────────────────
@@ -142,12 +157,15 @@ if (keyExists) {
 }
 
 // ─── 4 · grant ───────────────────────────────────────────────────────────
-await call('POST', '/v2/AllowBucketKey', {
-  bucketId: bucket.id,
-  accessKeyId,
-  permissions: { read: true, write: true, owner: true },
-});
-log(`key ${KEY_NAME} granted read/write/owner on ${BUCKET_ALIAS}`);
+for (const bucket of buckets) {
+  await call('POST', '/v2/AllowBucketKey', {
+    bucketId: bucket.id,
+    accessKeyId,
+    permissions: { read: true, write: true, owner: true },
+  });
+}
+
+log(`key ${KEY_NAME} granted read/write/owner on ${BUCKET_ALIASES.join(', ')}`);
 
 // ─── 5 · lifecycle: two rules, two different kinds of orphan ────────────
 // 1. Incomplete multipart uploads (a client started one and never called
@@ -170,9 +188,14 @@ const s3 = new S3Client({
   credentials: { accessKeyId, secretAccessKey },
 });
 
+// hw26-uploads only — hw26-assets never sees a multipart upload or a
+// pending/ staging key (demo:cdn's publish() is a single PutObject), so
+// there's nothing for either rule to clean up there.
+const UPLOADS_BUCKET = 'hw26-uploads';
+
 await s3.send(
   new PutBucketLifecycleConfigurationCommand({
-    Bucket: BUCKET_ALIAS,
+    Bucket: UPLOADS_BUCKET,
     LifecycleConfiguration: {
       Rules: [
         {
@@ -192,5 +215,5 @@ await s3.send(
   }),
 );
 log(
-  `lifecycle rules set on ${BUCKET_ALIAS}: abort incomplete multipart uploads after 7 days, expire abandoned pending/ uploads after 1 day`,
+  `lifecycle rules set on ${UPLOADS_BUCKET}: abort incomplete multipart uploads after 7 days, expire abandoned pending/ uploads after 1 day`,
 );

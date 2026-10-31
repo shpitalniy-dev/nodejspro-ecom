@@ -2045,9 +2045,9 @@ npm run demo:rbac
 
 ## Object storage: presigned uploads | HW #26
 
-Status: `demo:upload` (presigned intent/commit) and `demo:multipart`
-(resumable multipart) are done. `demo:cdn` is still in progress and will
-land here, and in `## Files | HW #26` below, with its own slice.
+Status: all three required demos are done — `demo:upload` (presigned
+intent/commit), `demo:multipart` (resumable multipart), and `demo:cdn`
+(closed bucket, cache in front, no invalidation).
 
 **Key decisions:**
 
@@ -2213,6 +2213,91 @@ land here, and in `## Files | HW #26` below, with its own slice.
   `demo:multipart`'s test buffer carries a real PNG signature in its
   first 8 bytes for exactly this reason — the rest stays random padding,
   since the check only ever reads the first 12 bytes.
+- **The "edge" is a small Nest service that reads storage with real
+  credentials, not nginx reverse-proxying a public endpoint.** The
+  lecture's own edge-cache demo (`26_FilesS3Cdn/src/05-edge-cache.ts`,
+  `edge/nginx.conf`) is `nginx` + `proxy_cache` in front of a **publicly
+  readable** bucket — it works because the origin already serves
+  anonymously, which is the opposite of this slice's `direct=403`
+  requirement. The fix the homework names directly: the cache has to
+  fetch "via a few lines that go to storage with an SDK client," not
+  `proxy_pass`. `AssetsService` does exactly that
+  (`GetObjectCommand`/`S3ClientService`, the same credentialed client
+  every other slice already uses) — the Garage-compatible version of the
+  same principle CloudFront's OAC implements with a bucket policy: nothing
+  reads the bucket anonymously, only one credentialed party does, and the
+  public only ever talks to that party.
+- **A second bucket, `hw26-assets`, separate from `hw26-uploads`.** The
+  weaker reason is lifecycle hygiene: `scripts/garage-init.mjs` sets the
+  abort-incomplete-multipart/expire-pending rules only on `hw26-uploads` —
+  `hw26-assets` never sees a multipart upload or a `pending/` key, so
+  there's nothing there for either rule to clean up (though this alone
+  wouldn't _require_ two buckets — a lifecycle rule's own `Filter.Prefix`
+  could scope it within one bucket just as well).
+  The real reason is security blast radius, and it's sharper on Garage
+  than the generic "never mix public and private data in one bucket"
+  advice would suggest: real AWS S3 can scope an IAM/bucket policy to a
+  prefix (`Resource: "arn:aws:s3:::bucket/assets/*"`), so on AWS a single
+  -bucket-with-prefixes design is also a legitimate choice. **Garage can't
+  do that at all** — `AllowBucketKey`'s grant (`{read, write, owner}`) is
+  bucket-level only, with no prefix scoping whatsoever. One bucket would
+  mean the edge cache's read path and the private-upload path share the
+  exact same key with the exact same bucket-wide grant — no policy, no
+  mechanism, nothing would stand between "the public cache can read this"
+  and "this is someone's private upload." On this backend specifically,
+  the bucket boundary isn't reinforcing an existing security boundary,
+  it's the only one available.
+- **The edge cache is Redis (reusing HW #23's `CacheRedisConnection`), not
+  an in-memory `Map`.** An in-memory cache is invisible to every other
+  replica of this API — the moment this runs behind more than one
+  instance, a request landing on a different process would miss even
+  though another process already fetched and cached the exact same
+  object. What still makes this "an edge cache" and not just "HW #23's
+  cache again" isn't the storage technology, it's the invalidation story:
+  `CacheAsideService` has an `invalidate()` that issues `redis.del()`
+  because the thing it caches (a DB row) can change under a fixed key.
+  `AssetsService` has no equivalent — a content-hashed key is only ever
+  superseded by a _different_ key, never updated in place, so there's no
+  write path that ever needs to evict one.
+  🔴 **Known limitation, not hidden**: `get()` caches the full object body
+  in Redis (see `assets.service.ts`'s own comment there). Fine for what
+  this slice actually publishes — small, hot, infrequently-updated static
+  assets, the realistic case for a Redis-backed cache — but it doesn't
+  scale to large media the way a real CDN edge does: Redis is in-memory,
+  so every cached asset's bytes compete for RAM against everything else
+  sharing this same connection (HW #23's rate limiter, sessions, product
+  cache), where a real CDN's edge nodes are disk-backed specifically so
+  object size isn't a RAM-budget problem. A production version serving
+  large files should cap what this cache will hold by size, or not put a
+  Redis tier in front of large media at all.
+- **Content-hash naming is the entire "update without invalidation"
+  mechanism** — `publish(name, content, contentType, ext)`
+  (`createHash('sha256')`, first 8 hex chars) names the object
+  `${name}.<hash>.<ext>` (`name` is the caller's own logical asset name —
+  `app`, `vendor`, whichever — so two different assets never collide into
+  the same pattern just because they share an extension, the same shape a
+  real bundler's own content-hashed output uses). New content is a new
+  key; the **origin object** for an old key is never deleted or expired by
+  anything in this service (no lifecycle rule on `hw26-assets`), so it
+  keeps serving the old bytes indefinitely — that's a different claim from
+  the **cache copy**, which does expire after its own TTL (the asset's
+  declared `max-age`, one year) and then just re-fetches from the
+  still-intact origin on the next request, it doesn't mean the old version
+  became unavailable. `demo:cdn`'s cleanup deletes both the storage object
+  and the Redis entry it published (`redis.del` on the asset's cache key,
+  alongside the `DeleteObjectCommand`) at the end of every run — that's
+  demo hygiene so repeated runs don't accumulate junk in either store, not
+  a simulation of real expiration; nothing removes a _real_ published
+  asset this way. `demo:cdn`'s own spot-check (swap the hash for a fixed
+  string, confirm `new-name`/`content-changed` both flip from 1 to 0 and
+  the run fails) is what confirms the no-invalidation claim is actually
+  being tested, not just asserted.
+- **Direct anonymous access already gives exactly `403`, confirmed
+  against the real container** — `AccessDenied: Forbidden: Garage does
+not support anonymous access yet`. Unlike AWS S3 (private by default,
+  but a bucket policy _can_ open it up) or the tagging/lifecycle gaps
+  already documented above, this one needed no configuration at all:
+  Garage's S3 API simply never serves an anonymous request.
 
 ### Measured runs
 
@@ -2220,41 +2305,43 @@ land here, and in `## Files | HW #26` below, with its own slice.
 | ---------------- | ----------------------------------------------------------------------------------------------------------------------- | ---- |
 | `demo:upload`    | `intent=200 key-from-server=1 api-alive=0 put-offline=200 commit=200 commit-without-bytes=409 tampered=403 expired=403` | 0    |
 | `demo:multipart` | `head-before-complete=404 resumed-parts=1 complete=200 size-match=1 etag-multipart=1`                                   | 0    |
+| `demo:cdn`       | `direct=403 edge-miss=200 edge-hit=200 cache-hit=1 new-name=1 new-url=200 content-changed=1`                            | 0    |
 
-Both run twice in a row (and again from a `docker compose down -v` fresh
-volume) with identical output both times, and confirmed empty storage +
-`files` table after each run — self-cleanup, not just a lucky absence of
-leftover state. `demo:multipart` doesn't need any special-cased cleanup
-_at the start_ to pass twice — every run's object key is a fresh
-`randomUUID()` (inherited from the single-PUT path's own design), so a
-second run can never see the first run's object regardless; the `finally`
-block still deletes the row+object at the end of every run so nothing
-accumulates over many runs.
+All three run twice in a row (and again from a `docker compose down -v`
+fresh volume) with identical output both times, and confirmed empty
+storage + `files` table after each run — self-cleanup, not just a lucky
+absence of leftover state. `demo:multipart`/`demo:cdn` don't need any
+special-cased cleanup _at the start_ to pass twice — every run's object
+key is either a fresh `randomUUID()` or content-derived from
+run-randomized content, so a second run can never see the first run's
+object regardless; the `finally` block in each still deletes what it
+created at the end of every run so nothing accumulates over many runs.
 
 ### Running the demos
 
 ```bash
 npm run demo:upload
 npm run demo:multipart
+npm run demo:cdn
 ```
 
 ## Files | HW #26
 
-The homework's own required section. Status: covers setup, `demo:upload`,
-and `demo:multipart` fully; the CDN-form/bucket-policy items below land
-with `demo:cdn`'s own slice.
+The homework's own required section. Status: covers setup and all three
+demos fully.
 
 ### Environment variables
 
-| Variable                 | Джерело                               | Навіщо                                                                                |
-| ------------------------ | ------------------------------------- | ------------------------------------------------------------------------------------- |
-| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side |
-| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                     |
-| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                |
-| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                |
-| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                              |
-| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app   |
-| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                     |
+| Variable                 | Джерело                               | Навіщо                                                                                                                     |
+| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
+| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
+| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
+| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                                                     |
+| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                                                                   |
+| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)                 | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
+| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
+| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
 
 `GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` aren't in `src/config/env.schema.ts`
 on purpose — the NestJS app never reads them, only the `garage` container
@@ -2286,11 +2373,53 @@ HW #26` section for the full reasoning.
 
 ### CDN form, bucket policy
 
-Not decided yet — land with `demo:cdn`'s own slice.
+**Form chosen: local authenticated edge** (`AssetsService`/`AssetsController`,
+`GET /assets/:key`), not real CloudFront — no AWS account, same
+constraint every other slice's storage choice has already made. It reads
+`STORAGE_BUCKET_ASSETS` with real storage credentials
+(`GetObjectCommand`/`S3ClientService`) and caches in Redis, never via a
+reverse proxy in front of an anonymously-readable origin — see Object
+storage's own "Key decisions" for why that distinction matters here.
+
+**Bucket policy** — written for the real-AWS/OAC-equivalent variant, even
+though it's never applied on Garage (which has no bucket-policy API at
+all; see below):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowCloudFrontOAC",
+      "Effect": "Allow",
+      "Principal": { "Service": "cloudfront.amazonaws.com" },
+      "Action": "s3:GetObject",
+      "Resource": "arn:aws:s3:::hw26-assets/*",
+      "Condition": {
+        "StringEquals": {
+          "AWS:SourceArn": "arn:aws:cloudfront::ACCOUNT_ID:distribution/DISTRIBUTION_ID"
+        }
+      }
+    }
+  ]
+}
+```
+
+The `Condition` on `AWS:SourceArn` isn't optional decoration — without
+it, this policy authorizes _every_ CloudFront distribution in existence
+to read the bucket, not just this project's own one.
+
+🔴 **Garage has no bucket-policy API at all** (`PutBucketPolicy` →
+`501 NotImplemented`, the same honesty-boundary already hit with object
+tagging above) — so on this backend, "closed bucket" isn't a policy
+decision, it's the unconditional default: confirmed against the real
+container, an anonymous GET returns `403 AccessDenied: Forbidden: Garage
+does not support anonymous access yet`, with no configuration required to
+get there.
 
 ### Own measured numbers
 
-See `## Object storage | HW #26` → `### Measured runs` — both demos'
+See `## Object storage | HW #26` → `### Measured runs` — all three demos'
 contract lines, confirmed identical across two consecutive runs and a
 third run from a genuinely fresh `docker compose down -v` volume.
 
@@ -2329,6 +2458,7 @@ export REFRESH_TOKEN_PEPPER="$(node -e "console.log(require('node:crypto').rando
 # "Key decisions"), same throwaway-per-run shape as JWT_PRIVATE_KEY above.
 export STORAGE_ENDPOINT=http://127.0.0.1:6600
 export STORAGE_BUCKET_UPLOADS=hw26-uploads
+export STORAGE_BUCKET_ASSETS=hw26-assets
 # Garage enforces the key-ID shape: GK + 12 hex-encoded bytes.
 export STORAGE_ACCESS_KEY="GK$(node -e "console.log(require('node:crypto').randomBytes(12).toString('hex'))")"
 export STORAGE_SECRET_KEY="$(node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))")"
@@ -2414,6 +2544,7 @@ npm run migrate
 npm run seed
 npm run demo:upload
 npm run demo:multipart
+npm run demo:cdn
 ```
 
 ### Cumulative commands
@@ -2449,6 +2580,7 @@ npm run demo:reuse
 npm run demo:rbac
 npm run demo:upload
 npm run demo:multipart
+npm run demo:cdn
 npm run demo:realtime
 npm run demo:realtime -- --same-room
 bash scripts/backup.sh

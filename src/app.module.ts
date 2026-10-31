@@ -4,6 +4,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { Env } from './config/env.schema.ts';
 import { validate } from './config/env.schema.ts';
 import { JwtKeysService } from './config/jwt-keys.ts';
+import { AssetsController } from './controllers/assets/assets.controller.ts';
+import { AssetsService } from './controllers/assets/assets.service.ts';
 import { AccessDenylistService } from './controllers/auth/access-denylist.service.ts';
 import { AccessTokenService } from './controllers/auth/access-token.service.ts';
 import { AuthController } from './controllers/auth/auth.controller.ts';
@@ -48,6 +50,7 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
     OrdersController,
     AuthController,
     FilesController,
+    AssetsController,
   ],
   providers: [
     ProductsService,
@@ -101,6 +104,15 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
         config: ConfigService<Env, true>,
       ) => new RefreshGraceCacheService(await conn.getClient(), config),
       inject: [QueueRedisConnection, ConfigService],
+    },
+    {
+      provide: AssetsService,
+      useFactory: async (
+        conn: CacheRedisConnection,
+        s3: S3ClientService,
+        config: ConfigService<Env, true>,
+      ) => new AssetsService(await conn.getClient(), s3, config),
+      inject: [CacheRedisConnection, S3ClientService, ConfigService],
     },
   ],
   imports: [
