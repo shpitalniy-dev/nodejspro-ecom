@@ -7,11 +7,18 @@
     "build": "tsc -p tsconfig.build.json",
     "check:env": "node scripts/check-env-example.js",
     "contract": "node contract/check.js",
+    "demo:nplus1": "bash scripts/with-secrets.sh dev node build/demo-nplus1.js",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",
     "lint": "eslint ./ --max-warnings 0",
+    "migrate": "bash scripts/with-secrets.sh dev npx typeorm migration:run -d build/data-source.js",
+    "migrate:generate": "bash scripts/with-secrets.sh dev npx typeorm migration:generate -d build/data-source.js",
+    "migrate:revert": "bash scripts/with-secrets.sh dev npx typeorm migration:revert -d build/data-source.js",
+    "migrate:show": "bash scripts/with-secrets.sh dev npx typeorm migration:show -d build/data-source.js",
     "precommit": "lint-staged && npm run ts-lint",
     "prepare": "husky install",
+    "report": "bash scripts/with-secrets.sh dev node build/report.js",
+    "seed": "bash scripts/with-secrets.sh dev node build/seed.js",
     "start": "npm run build && node ./build/index.js",
     "test": "tsc -p tsconfig.test.json && node --test ./.test-build/test/*.test.js",
     "ts-lint": "tsc --noEmit"
@@ -26,6 +33,7 @@
     "pg": "8.16.3",
     "reflect-metadata": "0.2.2",
     "rxjs": "7.8.2",
+    "typeorm": "1.1.1",
     "zod": "4.4.3"
   },
   "devDependencies": {

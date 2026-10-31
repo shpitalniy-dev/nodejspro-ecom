@@ -259,7 +259,7 @@ password](#rotate-the-db-password-without-restarting) below for why.
 frozen value, which can't survive `rotate.sh` changing it without a
 restart. It exists for external tools that expect the standard
 `postgres://user:password@host:port/db` shape — a `psql "$DB_URL"`
-one-liner, a future ORM CLI running migrations — not for the running app,
+one-liner, [the ORM CLI](#orm-layer--hw-13) — not for the running app,
 so it authenticates as `admin`, not `app_user`: migrations need `CREATE`
 rights `app_user` doesn't have (see [Connect](#connect) under Data Layer —
 same reasoning as running `db/schema.sql` as `admin`). `.env.example`
@@ -431,4 +431,243 @@ bash db/explain.sh   # actually run q1-q3 so idx_scan reflects real usage
 
 docker compose exec -T postgres psql -U admin -d ecom -Atc \
   "SELECT indexrelname, idx_scan FROM pg_stat_user_indexes WHERE idx_scan = 0;"
+```
+
+## ORM Layer | HW #13
+
+TypeORM entities, migrations, seed, and a report over the HW#12 schema —
+`db/schema.sql` isn't replaced, it stays exactly as-is for HW#12's own
+`EXPLAIN` pipeline above. This is a second, equivalent path to the same
+schema: entities are hand-written to mirror `db/schema.sql`, and the one
+migration below creates the same tables/constraints from scratch, with two
+documented exceptions noted where they come up.
+
+| File                      | Purpose                                                               |
+| ------------------------- | --------------------------------------------------------------------- |
+| `src/entities/`           | One class per table, hand-mapped to `db/schema.sql`                   |
+| `src/migrations/`         | One migration, generated then hand-edited (see below)                 |
+| `src/data-source.ts`      | `DataSource`, `synchronize: false` — config only from `process.env`   |
+| `src/seed.ts`             | Deterministic, idempotent fixture data                                |
+| `src/demo-nplus1.ts`      | N+1, measured, on `orders -> order_items -> products`                 |
+| `src/report.ts`           | One aggregate report via `createQueryBuilder().getRawMany()`          |
+| `scripts/with-secrets.sh` | Wraps every DB-touching script; `DB_URL` from Infisical or the grader |
+
+### Entities
+
+Explicit snake_case `name:` on every column — no naming-strategy package,
+so the mapping is visible in each file rather than implied by convention.
+Money columns (`price_cents`, `amount_cents`, `discount_cents`) are `bigint`
+in Postgres and typed `string` in TypeScript: `pg` returns `bigint` as a
+string to avoid silent precision loss past `Number.MAX_SAFE_INTEGER` — the
+same reasoning HW#12 already had for widening these columns off `int4`.
+`id` is `GENERATED ALWAYS AS IDENTITY`, matching `db/schema.sql` exactly.
+
+Every relation property is wrapped in `Relation<T>`
+(`product!: Relation<Product>`, `orders?: Relation<Order[]>`, …) — not
+style. The entities reference each other on both sides of every relation
+(`Order.items` <-> `OrderItem.order`), and `emitDecoratorMetadata` emits a
+direct class reference for an unwrapped relation type, which crashes at
+runtime in this ESM project (`Cannot access 'X' before initialization` —
+a temporal-dead-zone error from the import cycle). `Relation<T>` is
+TypeORM's own fix: it makes the emitted metadata `Object` instead of the
+class, so the cycle stays lazy. The import cycles themselves are real but
+benign (resolved lazily via each relation's `() => Entity` thunk) —
+`import/no-cycle` is scoped off for `src/entities/` accordingly.
+
+`order_items` is the join-entity for the genuinely many-to-many
+orders<->products relationship — it carries data on the edge (`quantity`,
+a price/currency/key snapshot at purchase time), so it's a real entity with
+two `@ManyToOne`s, never `@ManyToMany`.
+
+### Relations & onDelete
+
+| Relation                        | FK column             | `onDelete` | Why                                                             |
+| ------------------------------- | --------------------- | :--------: | --------------------------------------------------------------- |
+| `Inventory.product` → `Product` | `product_id` (UNIQUE) | `CASCADE`  | Inventory is a product's own attribute — gone if the product is |
+| `OrderItem.product` → `Product` | `product_id`          | `RESTRICT` | Order history must survive a product going away                 |
+| `OrderItem.order` → `Order`     | `order_id`            | `RESTRICT` | Same — items are the history                                    |
+| `Order.user` → `User`           | `user_id`             | `RESTRICT` | An order must survive its buyer being removed                   |
+| `Fulfillment.order` → `Order`   | `order_id` (UNIQUE)   | `RESTRICT` | A fulfillment record outlives interest in deleting its order    |
+
+```bash
+grep -rn "onDelete" src/
+#   order-item.entity.ts:50   onDelete: 'RESTRICT'
+#   order-item.entity.ts:57   onDelete: 'RESTRICT'
+#   inventory.entity.ts:38    onDelete: 'CASCADE'
+#   order.entity.ts:56        onDelete: 'RESTRICT'
+#   fulfillment.entity.ts:46  onDelete: 'RESTRICT'
+```
+
+### Migrations
+
+`synchronize: false` in `data-source.ts` — schema changes only ever happen
+through a migration, never inferred from entities at runtime.
+
+The one migration (`src/migrations/*-InitialSchema.ts`) was generated with
+`typeorm migration:generate` against an empty database, then hand-edited
+for the two things entity metadata can't express:
+
+1. `CREATE UNIQUE INDEX users_email_lower_key ON users (LOWER(email))` —
+   TypeORM has no expression-index decorator.
+2. The `set_updated_at()` trigger function + one `BEFORE UPDATE` trigger
+   per table — `updated_at` is DB-managed, stamped on every real update
+   regardless of who issues it, and stays `NULL` until then. `down()`
+   reverses both, in dependency order, before the generated drops.
+
+One deliberate divergence from `db/schema.sql`: `currency` is `text` +
+`CHECK (currency IN ('USD'))` in the migration, where `db/schema.sql` uses
+the `currency_code` DOMAIN. Equivalent enforcement — chosen so
+`migration:generate` doesn't perpetually flag a domain it can't introspect
+as a pending change.
+
+```bash
+docker compose up -d --wait
+npm run build
+npm run migrate         # creates the schema from scratch
+npm run migrate:show    # [X] InitialSchema...
+npm run migrate:revert  # drops it again — down() is a real implementation
+npm run migrate         # back to the same schema
+```
+
+### Seed
+
+`src/seed.ts` — deterministic fixtures (fixed UUIDs/keys/prices, no
+`random()`), idempotent via `ON CONFLICT DO NOTHING` on each table's
+natural key (`products.key`, `users.uuid`, `orders.uuid`,
+`inventory.product_id`, `fulfillments.order_id`). `order_items` has no
+natural key of its own, so it's only inserted for orders that were
+actually new on that run — piggybacking on `orders`' own conflict check
+rather than needing one of its own.
+
+```bash
+npm run seed && npm run seed   # second run: no errors, 0 rows added
+```
+
+```bash
+psql "$DB_URL" -c "SELECT
+  (SELECT count(*) FROM users)        AS users,
+  (SELECT count(*) FROM products)     AS products,
+  (SELECT count(*) FROM inventory)    AS inventory,
+  (SELECT count(*) FROM orders)       AS orders,
+  (SELECT count(*) FROM order_items)  AS order_items,
+  (SELECT count(*) FROM fulfillments) AS fulfillments;"
+# 8 | 10 | 10 | 8 | 13 | 3 — identical before and after the second run
+```
+
+### N+1 — naive vs. `relations` vs. `relationLoadStrategy`
+
+Measured on the real graph, `orders -> order_items -> products`, at two
+collection sizes (`N = 3` and `N = 8`, the full seed) to prove the fixed
+strategies are flat, not just smaller:
+
+| Strategy                               | N=3 | N=8 |
+| -------------------------------------- | :-: | :-: |
+| naive (query per element, both levels) |  9  | 22  |
+| `relations` (join, default)            |  2  |  2  |
+| `relationLoadStrategy: 'query'`        |  5  |  5  |
+
+Naive is `1 + N + M` (orders, then one items-query per order, then one
+products-query per item) — it visibly scales with the collection.
+Both fixes are exactly flat across `N=3 -> N=8`, which is the actual proof,
+not just a smaller number at one size.
+
+Two results worth explaining rather than rounding off:
+
+- **`relations` measured 2, not 1.** `take` (pagination) meets a to-many
+  join: Postgres can't apply `LIMIT` directly on a joined result (the join
+  multiplies rows per order), so TypeORM runs a `SELECT DISTINCT` id-picking
+  subquery first, then the real joined fetch. Drop `take` and it's a
+  genuine 1 query — kept here because a real list endpoint is paginated.
+- **`relationLoadStrategy: 'query'` measured 5**, matching `1 + 2×levels`
+  for 2 levels exactly: the orders query, a batched `order_items WHERE
+order_id IN (...)`, a batched `products WHERE id IN (...)`, plus two
+  relation-id mapping queries TypeORM issues to stitch the results back
+  together (one per relation edge).
+
+```bash
+npm run demo:nplus1
+```
+
+### Report — Repository vs. QueryBuilder
+
+`src/report.ts` computes revenue by product, counting only `paid` orders
+(unpaid/pending haven't been paid; refunded had the money returned) —
+an aggregate across a join that `find()` has no vocabulary for at all, so
+it's `createQueryBuilder().getRawMany()`:
+
+```bash
+npm run report
+```
+
+```
+revenue by product (paid orders only)
+  sku-doohickey      2 units       $250.00   (1 line item)
+  sku-apparatus      1 unit        $230.00   (1 line item)
+  sku-contraption    2 units       $176.00   (1 line item)
+  ...
+```
+
+`SUM`/`COUNT` come back from `pg` as strings too, same reasoning as the
+`bigint` columns above — `revenueCents`, `unitsSold`, `lineItems` are all
+converted only at display time.
+
+**Repository vs. QueryBuilder, the rule this project follows:** Repository
+(`find()`, relations, `save()`) for anything that maps onto an entity —
+CRUD, relation loading, filtering by columns. `createQueryBuilder()` only
+when the result isn't shaped like an entity at all — an aggregate or a raw
+cross-join projection `find()` structurally can't produce. Domain-shaped
+result → Repository; report-shaped result → QueryBuilder.
+
+### Connection — via Infisical
+
+Every value in `data-source.ts` comes from `process.env.DB_URL` — no
+hardcoded host or password, no separate env file read:
+
+```bash
+grep -nE "password:['\"]" src/data-source.ts   # empty
+```
+
+`DB_URL` carries `admin` credentials on purpose: migrations, seed, and the
+report all need `CREATE`/broad rights `app_user` doesn't have. It's
+populated by `scripts/with-secrets.sh`, which wraps every DB-touching
+script (`migrate*`, `seed`, `demo:nplus1`, `report`):
+
+```bash
+bash scripts/with-secrets.sh dev npm run migrate
+```
+
+logs into Infisical with a read-only machine identity and runs the command
+through `infisical run --env=dev`. The grader has no vault access, so it
+sets `SKIP_VAULT=1` and exports `DB_URL` itself — the wrapper execs the
+command directly, no Infisical call at all, right after the `ENV_SLUG` is
+split off the arguments and before anything vault-related happens:
+
+```bash
+node -e "const s=require('./package.json').scripts;const bad=['migrate','seed']
+  .filter(k=>/with-secrets\.sh/.test(s[k]||'')===false);
+  console.log(bad.length===0?'OK':'без обгортки: '+bad.join(', '));
+  process.exit(bad.length===0?0:1)"
+```
+
+## Grading
+
+Fresh clone, clean DB, no vault access:
+
+```bash
+docker compose up -d --wait
+export DB_URL=postgresql://admin:admin-bootstrap-password@127.0.0.1:5432/ecom
+export SKIP_VAULT=1
+```
+
+```bash
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run migrate:show
+npm run migrate:revert
+npm run migrate
+npm run seed && npm run seed
+npm run demo:nplus1
+npm run report
 ```

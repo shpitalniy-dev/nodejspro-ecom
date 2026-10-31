@@ -17,8 +17,24 @@ services:
       # you're targeting.
       - path: .env
         required: false
-    volumes:
-      - infisical_secrets:/shared-secrets:ro
+    # PORT/DB_URL have no default in src/config/env.schema.ts (by design —
+    # they're meant to be required), so on a fresh clone with no .env the
+    # app fails config validation and never becomes healthy, which fails
+    # `docker compose up -d --wait` outright (HW #13's grading needs the
+    # whole default profile up, not just postgres). ${VAR:-default} still
+    # picks up a real .env's values for interpolation — this only supplies
+    # the fallback a fresh clone is missing. DB_URL itself is never read by
+    # the running app (see Configuration | HW #11) — any syntactically
+    # valid value satisfies the schema.
+    environment:
+      PORT: ${PORT:-3000}
+      DB_URL: ${DB_URL:-postgresql://admin:admin-bootstrap-password@postgres:5432/ecom}
+    # Deliberately disconnected from Infisical for now, to meet HW #13's
+    # acceptance criteria — `docker compose up -d --wait`, then
+    # migrate/seed/demo/report run straight against Postgres as admin with
+    # /scripts/with-secrets.sh.
+    # volumes:
+    #   - infisical_secrets:/shared-secrets:ro
     init: true
     restart: unless-stopped
     ports:
@@ -29,8 +45,9 @@ services:
         max-size: 10m
         max-file: '5'
     depends_on:
-      infisical-agent:
-        condition: service_healthy
+      # Same reason as the volumes note above.
+      # infisical-agent:
+      #   condition: service_healthy
       postgres:
         condition: service_healthy
     deploy:
@@ -45,6 +62,8 @@ services:
   postgres:
     image: postgres:17-alpine
     restart: unless-stopped
+    ports:
+      - '127.0.0.1:5432:5432'
     logging:
       driver: json-file
       options:
@@ -68,7 +87,15 @@ services:
           cpus: '0.25'
           memory: 256M
 
+  # Opt-in only: `docker compose --profile rotation up -d`. Reactively (and,
+  # via reconcile.sh, unconditionally on its own startup) keeps app_user's
+  # Postgres password in sync with whatever's current in Infisical. Not part
+  # of the default `docker compose up` — api no longer depends on it or
+  # reads its output (api gets its own DB credentials at boot via
+  # scripts/with-secrets.sh instead), so this container is purely the
+  # rotation path and never blocks bringing the rest of the stack up.
   infisical-agent:
+    profiles: ['rotation']
     build:
       context: ./infisical
     restart: unless-stopped

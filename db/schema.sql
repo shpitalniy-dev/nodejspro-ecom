@@ -29,9 +29,14 @@ CREATE UNIQUE INDEX users_email_lower_key ON users (lower(email));
 -- One row per product. Separate from products on purpose — every order
 -- updates this table, not products, so the catalog itself stays purely
 -- read-heavy (see README's Architecture Note).
+--
+-- ON DELETE CASCADE, unlike every other FK here: inventory is a product's
+-- own attribute, meaningless without it. orders / order_items /
+-- fulfillments stay RESTRICT because they're history that must survive a
+-- parent going away.
 CREATE TABLE IF NOT EXISTS inventory (
     id INTEGER GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    product_id INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE RESTRICT,
+    product_id INTEGER NOT NULL UNIQUE REFERENCES products(id) ON DELETE CASCADE,
     quantity INTEGER NOT NULL CHECK (quantity >= 0),
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL
@@ -73,3 +78,27 @@ CREATE TABLE IF NOT EXISTS fulfillments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NULL
 );
+
+-- updated_at is DB-managed: a BEFORE UPDATE trigger stamps it on every real
+-- update, whoever issues it (app, TypeORM, seed, psql). It stays NULL until
+-- the first update — the trigger never fires on INSERT. One shared function,
+-- one trigger per table.
+CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER products_set_updated_at BEFORE UPDATE ON products
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER users_set_updated_at BEFORE UPDATE ON users
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER inventory_set_updated_at BEFORE UPDATE ON inventory
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER orders_set_updated_at BEFORE UPDATE ON orders
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER order_items_set_updated_at BEFORE UPDATE ON order_items
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER fulfillments_set_updated_at BEFORE UPDATE ON fulfillments
+    FOR EACH ROW EXECUTE FUNCTION set_updated_at();
