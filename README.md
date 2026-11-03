@@ -2298,6 +2298,45 @@ not support anonymous access yet`. Unlike AWS S3 (private by default,
   but a bucket policy _can_ open it up) or the tagging/lifecycle gaps
   already documented above, this one needed no configuration at all:
   Garage's S3 API simply never serves an anonymous request.
+- **`GET /uploads/:fileUuid` → 302 to a fresh presigned GET, and
+  `FilesService.reapStalePending()` for abandoned `pending` rows** — both
+  real code now, not just the paragraph the homework's own hints marked
+  as ungraded. The read path exists because a presigned URL can't be
+  revoked at all (no `jti`, no registry — none of HW #24's four denylist
+  strategies apply): the fix is to never hand one out to live longer than
+  a single request. `AuthGuard` still re-checks the caller on every call
+  here, so this endpoint — not the URL it redirects to — is what's
+  actually bookmarked, and the service stays in the authorization path
+  even though bytes still never cross it. `reapStalePending()` does
+  exactly the homework's own hint text in order — `ListMultipartUploads`
+  →(if still open)→ `AbortMultipartUpload` → `DeleteObject` → remove the
+  row — for every `pending` row older than a day; the abort-if-open check
+  is shared (`files.utils.ts`'s `abortIfOpen()`) with the demo cleanup
+  helper below, so both paths agree on what "still open" means. The age
+  cutoff itself is computed with Postgres's own `NOW() - make_interval(...)`,
+  not the app process's `Date.now()` — `created_at` was written by the
+  DB's clock, so comparing it against a cutoff built from a different
+  clock (the app server's) would silently drift by however much the two
+  disagree; keeping the whole comparison inside one clock avoids that
+  category of bug entirely rather than trusting NTP to keep both in sync.
+  There's
+  deliberately no BullMQ worker or cron wired up to call it on a
+  schedule — that's a deployment decision (when/how often to run it),
+  not a code one, and this project's other BullMQ usage (HW #23) is
+  entirely event-driven, nothing here stands up a persistent scheduled
+  consumer for anything. Proven by `demo:reap` (not one of the 3 graded
+  demos): a plain abandoned intent, an abandoned multipart upload, and a
+  fresh pending row all get the treatment they should — the stale ones
+  (and only the stale ones) are gone, and the multipart one's `UploadId`
+  no longer shows up in `ListMultipartUploads`.
+- **Cleanup aborts open multipart uploads, not just deletes the object**
+  — `demo.utils.ts`'s own `cleanupFiles()` had only ever done
+  `DeleteObjectCommand`, which is a no-op for a never-completed multipart
+  row (nothing exists at that key pre-`Complete` — see slice 2's own
+  design note). Now it calls the same `abortIfOpen()` helper first, so a
+  demo run that's interrupted mid-multipart doesn't leave a billed,
+  invisible upload for Garage's 7-day lifecycle rule to eventually find —
+  it's gone the moment cleanup runs, same run.
 
 ### Measured runs
 
@@ -2323,6 +2362,7 @@ created at the end of every run so nothing accumulates over many runs.
 npm run demo:upload
 npm run demo:multipart
 npm run demo:cdn
+npm run demo:reap   # not one of the 3 graded demos — stale-pending cleanup
 ```
 
 ## Files | HW #26

@@ -7,6 +7,7 @@ import type { Env } from '../../../config/env.schema.ts';
 import { File as FileEntity } from '../../../entities/file.entity.ts';
 import { DataSourceService } from '../../../services/data-source.service.ts';
 import { S3ClientService } from '../../../services/storage/s3-client.service.ts';
+import { abortIfOpen } from '../files.utils.ts';
 
 export function isPortOpen(port: number): Promise<boolean> {
   return new Promise(resolve => {
@@ -38,10 +39,13 @@ async function deleteFile(
   const bucket = app
     .get(ConfigService<Env, true>)
     .get('STORAGE_BUCKET_UPLOADS', { infer: true });
+  const s3 = app.get(S3ClientService).client;
 
-  await app
-    .get(S3ClientService)
-    .client.send(new DeleteObjectCommand({ Bucket: bucket, Key: row.key }));
+  if (row.uploadId) {
+    await abortIfOpen(s3, bucket, row.key, row.uploadId);
+  }
+
+  await s3.send(new DeleteObjectCommand({ Bucket: bucket, Key: row.key }));
 
   await repo.remove(row);
 }

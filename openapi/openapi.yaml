@@ -452,6 +452,50 @@ paths:
               schema:
                 $ref: '#/components/schemas/Problem'
 
+  /uploads/{fileUuid}:
+    get:
+      operationId: getFile
+      summary: Read path — redirect to a fresh presigned GET (HW #26)
+      description: >
+        A presigned URL can't be revoked (no jti, no registry — see
+        files.service.ts's getReadUrl()), so one is never handed out to
+        live past a single request. This endpoint mints a fresh,
+        short-lived (60s) presigned GET and 302s to it on every call —
+        AuthGuard re-checks the caller each time, so the authorization
+        path stays live even though bytes never cross this API.
+      tags:
+        - uploads
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: fileUuid
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '302':
+          description: Redirect to a freshly-signed presigned GET URL.
+        '401':
+          description: Missing, invalid, expired, or denylisted access token.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '403':
+          description: This file belongs to another user.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+        '404':
+          description: No completed file with this fileUuid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/Problem'
+
   /uploads/intent:
     post:
       operationId: createUploadIntent

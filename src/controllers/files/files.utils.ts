@@ -1,3 +1,38 @@
+import {
+  AbortMultipartUploadCommand,
+  ListMultipartUploadsCommand,
+  type S3Client,
+} from '@aws-sdk/client-s3';
+
+// Abort before delete, not blind delete alone: a multipart row's object
+// may not exist yet (nothing exists at its key pre-Complete), but the
+// CreateMultipartUpload itself can still be open on storage, billed and
+// invisible to a plain listing until Garage's own 7-day lifecycle rule
+// catches it. ListMultipartUploads first, not a direct Abort on the row's
+// uploadId blindly — a completed or already-aborted upload id throws
+// NoSuchUpload, the same "verify before acting" posture commit() already
+// uses when re-deriving parts from ListParts instead of trusting the row.
+export async function abortIfOpen(
+  s3: S3Client,
+  bucket: string,
+  key: string,
+  uploadId: string,
+): Promise<void> {
+  const { Uploads = [] } = await s3.send(
+    new ListMultipartUploadsCommand({ Bucket: bucket }),
+  );
+
+  if (Uploads.some(upload => upload.UploadId === uploadId)) {
+    await s3.send(
+      new AbortMultipartUploadCommand({
+        Bucket: bucket,
+        Key: key,
+        UploadId: uploadId,
+      }),
+    );
+  }
+}
+
 // Content-Type is never trustworthy, from either side: the client's
 // declared value at intent time is just a claim (see files.service.ts's
 // createIntent()), and — verified empirically against this exact stack —

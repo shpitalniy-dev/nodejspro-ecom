@@ -23,6 +23,7 @@
     "demo:ratelimit": "bash scripts/with-secrets.sh dev node build/services/rate-limit/demo/demo-rate-limit.js",
     "demo:rbac": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-rbac.js",
     "demo:realtime": "node scripts/realtime-demo.mjs",
+    "demo:reap": "bash scripts/with-secrets.sh dev node build/controllers/files/demo/demo-reap.js",
     "demo:retry": "bash scripts/with-secrets.sh dev node build/transactions/demo-retry.js",
     "demo:reuse": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-reuse.js",
     "demo:session": "bash scripts/with-secrets.sh dev node build/services/redis/demo/demo-session.js",
