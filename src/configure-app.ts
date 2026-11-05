@@ -3,17 +3,21 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import cookieParser from 'cookie-parser';
 import express from 'express';
 import * as OpenApiValidator from 'express-openapi-validator';
+import helmet from 'helmet';
 import path from 'node:path';
 
 import { ProblemExceptionFilter } from './filters/problem-exception.filter.ts';
 import { validationErrorHandler } from './middleware/validation-error-handler.ts';
+import { stripDangerousKeys } from './utils/object.ts';
 
 // Everything bootstrap() does to a freshly created Nest app except
 // listen() — shared by src/index.ts and the E2E testkit, so an E2E test
 // exercises the exact same body parser / OpenAPI validation / error
 // handling prod does, not a stripped-down stand-in.
 export function configureApp(app: NestExpressApplication): void {
-  app.use(express.json());
+  app.use(helmet());
+  app.use(express.json({ reviver: stripDangerousKeys }));
+
   // Unsigned — the refresh cookie's own value is opaque and HMAC-hashed
   // server-side before it's ever compared to anything, so a signed-cookie
   // layer on top wouldn't add a real guarantee here.
