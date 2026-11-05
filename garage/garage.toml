@@ -1,0 +1,31 @@
+# Garage — S3-compatible object storage for HW #26.
+#
+# Single node only (Garage is built to be distributed/geo-replicated; one
+# node is enough to speak the S3 API we actually need). Metadata/data live
+# on the named `garage_data` volume, not tmpfs — scripts/garage-init.mjs
+# only needs to assign the layout and mint an access key once, not on every
+# container restart.
+#
+# rpc_secret and admin_token are deliberately NOT set here — this file is
+# committed to git. Garage reads both from the environment instead
+# (GARAGE_RPC_SECRET / GARAGE_ADMIN_TOKEN, supported natively since
+# v0.8.2 — see docker-compose.yml's `garage` service), the same way this
+# project keeps JWT_PRIVATE_KEY out of any tracked file.
+
+metadata_dir = "/var/lib/garage/meta"
+data_dir     = "/var/lib/garage/data"
+db_engine    = "sqlite"
+
+# One copy — one node, nothing to replicate to.
+replication_factor = 1
+
+rpc_bind_addr = "[::]:3901"
+
+[s3_api]
+  api_bind_addr = "[::]:3900"
+  s3_region     = "us-east-1"
+
+[admin]
+  # scripts/garage-init.mjs drives cluster setup through this HTTP API
+  # (GARAGE_ADMIN_TOKEN above authenticates it), not `docker exec`.
+  api_bind_addr = "[::]:3903"

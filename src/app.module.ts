@@ -4,6 +4,8 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import type { Env } from './config/env.schema.ts';
 import { validate } from './config/env.schema.ts';
 import { JwtKeysService } from './config/jwt-keys.ts';
+import { AssetsController } from './controllers/assets/assets.controller.ts';
+import { AssetsService } from './controllers/assets/assets.service.ts';
 import { AccessDenylistService } from './controllers/auth/access-denylist.service.ts';
 import { AccessTokenService } from './controllers/auth/access-token.service.ts';
 import { AuthController } from './controllers/auth/auth.controller.ts';
@@ -16,6 +18,8 @@ import { AuthService } from './controllers/auth/auth.service.ts';
 import { PasswordService } from './controllers/auth/password.service.ts';
 import { RefreshGraceCacheService } from './controllers/auth/refresh-grace-cache.service.ts';
 import { RefreshTokenService } from './controllers/auth/refresh-token.service.ts';
+import { FilesController } from './controllers/files/files.controller.ts';
+import { FilesService } from './controllers/files/files.service.ts';
 import { HealthController } from './controllers/health/health.controller.ts';
 import { OrderEventsService } from './controllers/orders/order-events.service.ts';
 import { OrderOwnershipGuard } from './controllers/orders/order-ownership.guard.ts';
@@ -37,6 +41,7 @@ import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
 import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
 import { CacheRedisConnection } from './services/redis/cache-redis-connection.service.ts';
 import { QueueRedisConnection } from './services/redis/queue-redis-connection.service.ts';
+import { S3ClientService } from './services/storage/s3-client.service.ts';
 
 @Module({
   controllers: [
@@ -44,6 +49,8 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     ProductsController,
     OrdersController,
     AuthController,
+    FilesController,
+    AssetsController,
   ],
   providers: [
     ProductsService,
@@ -70,6 +77,8 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
     AuthGuard,
     LoginRateLimitGuard,
     RolesGuard,
+    S3ClientService,
+    FilesService,
     {
       provide: CacheAsideService,
       useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>
@@ -95,6 +104,15 @@ import { QueueRedisConnection } from './services/redis/queue-redis-connection.se
         config: ConfigService<Env, true>,
       ) => new RefreshGraceCacheService(await conn.getClient(), config),
       inject: [QueueRedisConnection, ConfigService],
+    },
+    {
+      provide: AssetsService,
+      useFactory: async (
+        conn: CacheRedisConnection,
+        s3: S3ClientService,
+        config: ConfigService<Env, true>,
+      ) => new AssetsService(await conn.getClient(), s3, config),
+      inject: [CacheRedisConnection, S3ClientService, ConfigService],
     },
   ],
   imports: [

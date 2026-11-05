@@ -61,6 +61,12 @@ export async function startTestApp(
   process.env.JWT_PUBLIC_KEY = Buffer.from(publicKey).toString('base64');
   process.env.REFRESH_TOKEN_PEPPER = randomBytes(32).toString('base64');
 
+  process.env.STORAGE_ENDPOINT = 'http://127.0.0.1:6600';
+  process.env.STORAGE_BUCKET_UPLOADS = 'hw26-uploads';
+  process.env.STORAGE_BUCKET_ASSETS = 'hw26-assets';
+  process.env.STORAGE_ACCESS_KEY = `GK${randomBytes(12).toString('hex')}`;
+  process.env.STORAGE_SECRET_KEY = randomBytes(32).toString('hex');
+
   const passwordFile = path.join(os.tmpdir(), `e2e-db-password-${process.pid}`);
 
   await writeFile(passwordFile, container.getPassword());

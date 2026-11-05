@@ -1,3 +1,4 @@
+import { File } from './file.entity.ts';
 import { Fulfillment } from './fulfillment.entity.ts';
 import { Inventory } from './inventory.entity.ts';
 import { Order } from './order.entity.ts';
@@ -9,6 +10,7 @@ import { RefreshToken } from './refresh-token.entity.ts';
 import { Task } from './task.entity.ts';
 import { User } from './user.entity.ts';
 
+export { File } from './file.entity.ts';
 export { Fulfillment } from './fulfillment.entity.ts';
 export { Inventory } from './inventory.entity.ts';
 export { Order } from './order.entity.ts';
@@ -33,4 +35,5 @@ export const entities = [
   Outbox,
   ProcessedMessage,
   RefreshToken,
+  File,
 ];

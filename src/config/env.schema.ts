@@ -46,6 +46,21 @@ export const envSchema = z.object({
   // the database specifically so a DB dump alone can't be used to forge or
   // verify a refresh token. Base64 of >=32 random bytes.
   REFRESH_TOKEN_PEPPER: z.string().min(1),
+  // Object storage (HW #26). Garage locally (S3-compatible; see
+  // docker-compose.yml's `garage` service and scripts/garage-init.mjs),
+  // real S3 in theory — nothing here is Garage-specific.
+  // Access key/secret sourced from the vault like every other secret;
+  // STORAGE_BUCKET_UPLOADS is the private bucket presigned PUTs target.
+  STORAGE_ENDPOINT: z.url(),
+  STORAGE_REGION: z.string().min(1).default('us-east-1'),
+  STORAGE_ACCESS_KEY: z.string().min(1),
+  STORAGE_SECRET_KEY: z.string().min(1),
+  STORAGE_BUCKET_UPLOADS: z.string().min(1),
+  // Separate from STORAGE_BUCKET_UPLOADS on purpose (HW #26 slice 3) —
+  // public-through-the-cache CDN assets and private user uploads have
+  // different lifecycles, and mixing them would blur the "closed bucket,
+  // open cache" story. See assets.service.ts.
+  STORAGE_BUCKET_ASSETS: z.string().min(1),
 });
 
 export type Env = z.infer<typeof envSchema>;
