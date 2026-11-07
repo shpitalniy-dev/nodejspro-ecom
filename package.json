@@ -42,6 +42,7 @@
     "prepare": "husky install",
     "rabbitmq:topology": "bash scripts/with-secrets.sh dev node build/services/rabbitmq/rabbitmq.bootstrap.js",
     "report": "bash scripts/with-secrets.sh dev node build/report.js",
+    "scan": "node scripts/scan.mjs",
     "seed": "bash scripts/with-secrets.sh dev node build/seed.js",
     "start": "npm run build && node ./build/index.js",
     "start:vault": "npm run build && bash scripts/with-secrets.sh dev node ./build/index.js",

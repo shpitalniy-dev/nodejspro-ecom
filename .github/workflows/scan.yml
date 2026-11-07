@@ -1,0 +1,17 @@
+name: Scan
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      # No real private registry in this project (see docker/Dockerfile's
+      # secret-demo stage) — any value works, it's never persisted.
+      - run: printf 'ci-dummy-token' > .npm_token
+      - run: npm run image:build
+      - run: npm run scan
