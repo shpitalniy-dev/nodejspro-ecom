@@ -2503,6 +2503,40 @@ it back (observed 2656MB → 3163MB free across one teardown on this run).
   through `kubectl port-forward`'s own connection semantics, which would
   confuse "did a request fail" with "did the tunnel reconnect."
 
+### Pulumi program (`infra/`)
+
+Typed `Namespace` + `Secret` + a `WebService` `ComponentResource`
+(`Deployment` + `Service` for now; `PodDisruptionBudget`/`HPA` join the
+same component in later stages — see its own file for why they're
+bundled together and `Namespace`/`Secret` aren't). Local file backend
+only (`PULUMI_BACKEND_URL=file://…`), never `pulumi login` — see
+`## Grading` below.
+
+`infra/index.ts` validates every required env var **before** creating
+anything, so a missing one fails immediately and names itself, rather
+than failing three resources into an `up`.
+
+| Variable               | Source            | Why                             |
+| ---------------------- | ----------------- | ------------------------------- |
+| `JWT_KID`              | сховище (#11/#24) | key id for access-token signing |
+| `JWT_PRIVATE_KEY`      | сховище (#11/#24) | access-token signing key        |
+| `JWT_PUBLIC_KEY`       | сховище (#11/#24) | access-token verification key   |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11/#24) | refresh-token hash pepper       |
+
+These four are real HW #24 vault secrets — no new env file, per the HW's
+own instruction. They're also the _only_ ones that need real values:
+`DataSourceService`, `RabbitMqService`, and `RedisConnectionService` are
+all deliberately lazy (see each one's own code comment — "the app boots
+and `--wait` passes even when \[the dependency\] is down"), and `GET
+/health` touches none of them. The one exception is `JwtKeysService`,
+which eagerly calls `createPrivateKey`/`createPublicKey` in its
+constructor specifically so a bad key fails at boot — which is exactly
+why these four, and only these four, need to be genuine. Every other
+required field in `env.schema.ts` (`DB_URL`, `BROKER_URL`, `REDIS_URL`,
+`REDIS_QUEUE_URL`, `STORAGE_*`) gets a plain, inert placeholder straight
+in the Deployment spec: not secret (they're locations, not credentials),
+and never dereferenced on this pod's actual request path.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -2671,3 +2705,25 @@ npm run test:e2e
 npm run test:contract
 npm run verify:provider
 ```
+
+### HW #28 commands
+
+Separate from the `docker compose` flow above — this deploys into the
+local `kind` cluster instead (see `## Kubernetes`). Reuses the same
+shell's `JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`/`REFRESH_TOKEN_PEPPER`
+and `SKIP_VAULT=1` exports from `### Setup` above — only these two are
+new:
+
+```bash
+export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
+export PULUMI_CONFIG_PASSPHRASE=hw28-grading
+
+npm --prefix infra ci
+npx --prefix infra tsc --noEmit
+printf 'dummy-npm-token' > .npm_token   # build-time secret demo; never in git
+npm run image:build
+npm run cluster:up
+npm run up
+```
+
+Teardown: `npm run destroy && npm run cluster:down`.

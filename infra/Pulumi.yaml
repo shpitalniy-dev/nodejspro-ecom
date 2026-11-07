@@ -1,0 +1,11 @@
+name: nodejspro-ecom-k8s
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: >-
+  HW #28. Typed Namespace/Secret/Deployment/Service (+PDB/HPA in later
+  stages) for nodejspro-ecom-api, deployed onto the local kind cluster.
+  Local file backend only — no `pulumi login`, see README's ## Grading:
+    PULUMI_BACKEND_URL=file://<abs>
+    PULUMI_CONFIG_PASSPHRASE=...

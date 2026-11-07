@@ -1,0 +1,13 @@
+{
+  "name": "nodejspro-ecom-infra",
+  "private": true,
+  "description": "HW #28 — typed Pulumi program deploying nodejspro-ecom-api into the local kind cluster",
+  "dependencies": {
+    "@pulumi/kubernetes": "4.34.3",
+    "@pulumi/pulumi": "3.248.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

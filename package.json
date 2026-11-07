@@ -32,6 +32,7 @@
     "demo:session": "bash scripts/with-secrets.sh dev node build/services/redis/demo/demo-session.js",
     "demo:upload": "bash scripts/with-secrets.sh dev node build/controllers/files/demo/demo-upload.js",
     "demo:workers": "bash scripts/with-secrets.sh dev node build/transactions/demo-workers.js",
+    "destroy": "pulumi -C infra destroy --yes",
     "dev": "nodemon",
     "githooks:commit-msg": "commitlint --edit",
     "image:build": "docker build -f docker/Dockerfile --target distroless -t nodejspro-ecom-api:k8s --secret id=npmtoken,src=.npm_token .",
@@ -53,6 +54,7 @@
     "test:e2e": "tsc -p tsconfig.test.json && node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js .test-build/test/e2e",
     "test:integration": "tsc -p tsconfig.test.json && node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js .test-build/test/integration",
     "ts-lint": "tsc --noEmit",
+    "up": "bash scripts/with-secrets.sh dev pulumi -C infra up --yes",
     "verify:provider": "tsc -p tsconfig.test.json && node --experimental-vm-modules node_modules/.bin/jest --config jest.config.js .test-build/test/contract/products.provider.test.js"
   },
   "dependencies": {
