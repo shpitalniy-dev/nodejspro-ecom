@@ -1863,7 +1863,7 @@ npm run demo:queue
   token's own header.
 - **Argon2id via `@node-rs/argon2`**, not `argon2` (ranisalt) — the latter
   needs an install script to fetch its native binary, which this repo's
-  `Dockerfile` (`npm ci --ignore-scripts`) would break. Params
+  `docker/Dockerfile` (`npm ci --ignore-scripts`) would break. Params
   (`memoryCost: 19456, timeCost: 2, parallelism: 1`, an OWASP tuple) are
   explicit, not left at the library default.
 - **Concurrent-hash memory is bounded two ways**: `LoginRateLimitGuard`
@@ -2110,7 +2110,7 @@ intent/commit), `demo:multipart` (resumable multipart), and `demo:cdn`
   same shape as `db-password-seed`) assigns the cluster layout, creates
   the bucket, imports the key, grants it, and sets a bucket lifecycle
   rule — all idempotently, on every `docker compose up -d --wait`, zero
-  manual steps. It builds from this project's own `Dockerfile`'s `deps`
+  manual steps. It builds from this project's own `docker/Dockerfile`'s `deps`
   stage (cache-shared with `api`'s own build, not a second image) and
   bind-mounts only the script itself — never `node_modules` — since a
   grader's `npm ci` runs _after_ `docker compose up -d --wait`, not
