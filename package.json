@@ -6,6 +6,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check:env": "node scripts/check-env-example.js",
+    "cluster:down": "bash scripts/cluster-down.sh",
+    "cluster:up": "bash scripts/cluster-up.sh",
     "contract": "node contract/check.js",
     "demo:auth": "bash scripts/with-secrets.sh dev node build/controllers/auth/demo/demo-auth.js",
     "demo:cache": "bash scripts/with-secrets.sh dev node build/services/cache/demo/demo-cache.js",

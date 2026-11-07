@@ -2463,6 +2463,46 @@ See `## Object storage | HW #26` → `### Measured runs` — all three demos'
 contract lines, confirmed identical across two consecutive runs and a
 third run from a genuinely fresh `docker compose down -v` volume.
 
+## Kubernetes | HW #28
+
+Local-only: everything in this section runs on a single-node `kind`
+cluster, no cloud account or payment method needed. This section grows
+across HW #28's own stages — only cluster bootstrap exists so far.
+
+### kind, not minikube — checked, not assumed
+
+`docker info` on the machine this was built on: **3.827 GiB total
+memory, 4 CPUs**. kind's containers-as-nodes model has no separate VM
+overhead the way minikube's docker driver does, and minikube refuses to
+start at all under `--memory 1800mb` — on a budget this tight, that
+headroom matters more during the rolling-update demo, which
+briefly needs capacity for `maxSurge: 1`'s extra pod.
+
+Measured on this machine: **48s** cold start the very first time (pulling
+the `kindest/node:v1.37.0` node image), **18s** on every run after (node
+image already cached locally) — `kubectl get nodes` reports `Ready` a few
+seconds after that. Real memory: **740.5MiB** (`docker stats`) while the
+cluster is up; tearing it down (`npm run cluster:down`) measurably frees
+it back (observed 2656MB → 3163MB free across one teardown on this run).
+
+### Cluster lifecycle
+
+- `npm run cluster:up` — idempotent create (`k8s/kind-config.yaml`,
+  single control-plane node), waits for the node to report `Ready`, then
+  `kind load docker-image nodejspro-ecom-api:k8s` so the cluster can
+  actually see the image it needs — a plain `docker build` on the host
+  is invisible to kind's own containerd otherwise, the most common cause
+  of a pod stuck in `ErrImagePull`. Safe to re-run: reloads the image
+  every time even if the cluster already existed, in case it was rebuilt
+  since the last run.
+- `npm run cluster:down` — `kind delete cluster`, nothing else on the
+  machine is touched.
+- NodePort `30080` (host port `8080`) is reserved in `k8s/kind-config.yaml`
+  now, ahead of the Service that will actually bind it (Stage 4/5), so
+  the rollout demo can curl the app directly from the host rather than
+  through `kubectl port-forward`'s own connection semantics, which would
+  confuse "did a request fail" with "did the tunnel reconnect."
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
