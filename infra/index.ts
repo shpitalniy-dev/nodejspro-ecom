@@ -43,12 +43,18 @@ const appSecret = new k8s.core.v1.Secret('app-secret', {
   ),
 });
 
+// Overridable only by demo/demo-rollout.mjs, which drives both a
+// "broken" (hardened:false) and a hardened deploy to prove zero-downtime
+// actually depends on the probes/strategy, not luck. `npm run up` with no
+// overrides behaves exactly as before.
+const hardened = process.env.HARDENED !== 'false';
+
 new WebService('nodejspro-ecom-api', {
   namespace: ns.metadata.name,
   image: 'nodejspro-ecom-api:k8s',
   replicas: 2,
   secretName: appSecret.metadata.name,
-  hardened: true,
+  hardened,
   // Plain placeholders, not secrets: DataSourceService, RabbitMqService and
   // RedisConnectionService are all deliberately lazy (see their own
   // comments) and GET /health never touches any of them, so nothing on
@@ -68,7 +74,7 @@ new WebService('nodejspro-ecom-api', {
     // Deployment-lifecycle knobs, not app config — read directly from
     // process.env in src/index.ts and ReadinessService, not env.schema.ts.
     DRAIN_MS: '5000',
-    WARMUP_MS: '0', // Stage 6's broken-profile demo raises this
-    REV: '1', // Stage 6 bumps this to force a real rollout
+    WARMUP_MS: process.env.WARMUP_MS ?? '0',
+    REV: process.env.REV ?? '1',
   },
 });

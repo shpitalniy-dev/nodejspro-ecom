@@ -6,6 +6,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { Env } from './config/env.schema.ts';
 import { ReadinessService } from './services/readiness.service.ts';
+import { sleep } from './utils/sleep.ts';
 import { AppModule } from './app.module.ts';
 import { configureApp } from './configure-app.ts';
 
@@ -27,7 +28,7 @@ async function bootstrap() {
   const warmupMs = Number(process.env.WARMUP_MS ?? 0);
 
   if (warmupMs > 0) {
-    await new Promise(resolve => setTimeout(resolve, warmupMs));
+    await sleep(warmupMs);
   }
 
   await app.listen(port);

@@ -49,6 +49,7 @@ export default [
       globals: {
         __dirname: 'readonly',
         __filename: 'readonly',
+        AbortSignal: 'readonly',
         Buffer: 'readonly',
         console: 'readonly',
         exports: 'writable',

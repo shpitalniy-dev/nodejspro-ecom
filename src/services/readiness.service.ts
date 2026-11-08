@@ -1,5 +1,7 @@
 import { BeforeApplicationShutdown, Injectable, Logger } from '@nestjs/common';
 
+import { sleep } from '../utils/sleep.ts';
+
 // SIGTERM handling has to live in beforeApplicationShutdown, not a
 // hand-rolled process.on('SIGTERM', ...): Nest's own shutdown sequence
 // (callDestroyHook -> callBeforeShutdownHook -> dispose() [closes the
@@ -30,6 +32,6 @@ export class ReadinessService implements BeforeApplicationShutdown {
       ReadinessService.name,
     );
 
-    await new Promise(resolve => setTimeout(resolve, drainMs));
+    await sleep(drainMs);
   }
 }

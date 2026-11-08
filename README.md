@@ -2574,16 +2574,45 @@ dependency connection before the drain window even started.
 the HTTP server — by then no in-flight or racing request can still need
 one of these connections.
 
-**`DRAIN_MS`/`WARMUP_MS`/`REV`** are deployment-lifecycle knobs, not app
-config — read directly from `process.env` in `src/index.ts` and
-`ReadinessService`, deliberately outside `env.schema.ts` (which has no
-`.strict()`, so it already ignores unknown keys — nothing to break by
-keeping these separate). `WARMUP_MS` defaults to `0` everywhere; Stage
-6's demo raises it to actually exercise the HW's own warned-about failure
-mode (an app that starts faster than a rolling update can catch it mid-
-startup measures a false zero). `REV` has no behavior yet — Stage 6 bumps
-it to force a real pod-template change, since rebuilding an image under
-the same tag doesn't trigger a rollout on its own.
+**`DRAIN_MS`/`WARMUP_MS`/`REV`/`HARDENED`** are deployment-lifecycle
+knobs, not app config — kept deliberately outside `env.schema.ts` (which
+has no `.strict()`, so it already ignores unknown keys — nothing to break
+by keeping these separate). They split into two different mechanisms,
+easy to conflate:
+
+- **`DRAIN_MS`** and **`WARMUP_MS`** are real **container env vars** —
+  they're in the Deployment's pod template (`infra/index.ts`'s `env:`
+  block), shipped into the running pod, and read via `process.env` inside
+  the app itself: `DRAIN_MS` by `ReadinessService`'s shutdown sleep,
+  `WARMUP_MS` by the pre-`listen()` delay in `src/index.ts`. `WARMUP_MS`
+  defaults to `0` everywhere; `demo/demo-rollout.mjs` raises it to
+  actually exercise the HW's own warned-about failure mode — an app that
+  starts faster than a rolling update can catch it mid-startup measures a
+  false zero.
+- **`HARDENED`** is a **Pulumi-program-time** toggle only — read by
+  `infra/index.ts` itself (on the machine running `pulumi up`, not inside
+  the pod) to pick which `WebService` branch to build. It never reaches
+  the container's env at all; `npm run up` with it unset behaves exactly
+  like `hardened: true` always did.
+- **`REV`** is also a container env var, but — deliberately — nothing in
+  `src/` ever reads it. Kubernetes decides whether to roll pods over by
+  diffing the pod template's literal fields (image string, env, labels,
+  …), never by looking inside the image for a content change. Since this
+  HW's local-`kind` workflow reuses one fixed image tag
+  (`nodejspro-ecom-api:k8s`, no registry, no per-build tag), rebuilding
+  and reloading that image changes nothing Kubernetes can see in the
+  template — `pulumi up` would compute no diff and never trigger a
+  rollout. `REV`'s only job is to be a value that changes between calls
+  (`demo-rollout.mjs` bumps it, e.g. `'2'` → `'3'`) so there's something
+  in the template for Kubernetes to notice and roll over — the same
+  category of trick as the `restartedAt` annotation `kubectl rollout
+restart` injects for the same reason. Real production avoids needing
+  this at all by tagging each build uniquely (a commit SHA or digest)
+  instead of reusing a static tag.
+
+All four default to today's committed values (`hardened:true`,
+`WARMUP_MS:0`, `REV:1`) when unset — `npm run up` with no overrides is
+unaffected; only `demo/demo-rollout.mjs` ever sets them.
 
 **The `hardened` flag** on `WebServiceArgs` controls `strategy.rollingUpdate`,
 `terminationGracePeriodSeconds`, and both probes together, as one flag —
@@ -2672,6 +2701,73 @@ docker start nodejspro-ecom-control-plane
 Docker Desktop quit/restart does to it — the container exits (`Exited
 (137)`) but nothing about it is deleted, so pods/Deployment/Service are
 all still there the moment it's started again.
+
+### Rollout demo (`npm run demo:rollout`)
+
+`demo/demo-rollout.mjs` proves zero-downtime actually depends on the
+probes/strategy, not luck: it runs a real HTTP load generator through a
+real rolling update, once against the deliberately "broken" profile
+(`hardened:false` — no probes, default-ish `{maxUnavailable:1,
+maxSurge:1}` strategy) and once against the hardened one, and reports
+what actually got dropped in each.
+
+It polls `GET /healthz` through the Service (`http://localhost:8080`),
+not a business endpoint — this deployment has no reachable Postgres (see
+above), so `GET /products` would 500 regardless of rollout health,
+telling you nothing about the rollout itself. `/healthz` is the honest
+stand-in: cheap, always-200 server-side, never touches a dependency, so
+any non-200 or connection error the load generator sees is attributable
+purely to routing/startup timing. Real production zero-downtime testing
+hits real business traffic — scoped out here only because nothing else
+is reachable in this cluster.
+
+`WARMUP_MS` (raised to `1500` for both profiles during this demo) exists
+to defeat the HW's own warned-about failure mode: an app that starts
+faster than a rolling update can catch it mid-startup measures a false
+zero. In the broken profile specifically, with no readinessProbe,
+Kubernetes marks a pod Ready the instant its container starts —
+regardless of whether `WARMUP_MS` has actually elapsed and `app.listen()`
+has bound the port yet. kube-proxy load-balances across both Endpoints,
+so some fraction of requests during that window hit a pod with nothing
+listening on `:3000` — a real, reproducible connection-refused, not a
+contrived one. The script restores the committed defaults
+(`hardened:true`, `WARMUP_MS:0`, `REV:1`) in a `finally` block once both
+phases finish, so the cluster is left exactly as the rest of this README
+describes it, not mid-demo.
+
+Measured locally (one run — see the script's own output for the
+authoritative numbers on any given run, which will vary with timing):
+
+- **broken (`hardened:false`)**: 234 requests, **4 failures (1.7%)**, all
+  within the first 388ms after load started — consistent with the new,
+  unprobed pod being marked Ready (and getting traffic) before its
+  `WARMUP_MS` sleep finished and `app.listen()` actually bound the port.
+- **hardened (`hardened:true`)**: 237 requests, **0 failures**.
+
+**Why the hardened profile has no downtime.** Three mechanisms acting
+together, not one: (1) the **readinessProbe** (`/readyz`) is what adds a
+pod to the Service's `Endpoints` list in the first place — a new pod
+never receives traffic until it actually passes it, so "not listening
+yet" can't become "getting requests," unlike the broken profile above.
+(2) **`maxUnavailable: 0`** forces the rollout to wait for that new,
+now-Ready pod before removing an old one — capacity never dips below the
+desired replica count. (3) On the way out, the same readinessProbe
+flips `ReadinessService.isReady()` to false on `SIGTERM` (see "Probes
+and graceful shutdown" above), removing the terminating pod from
+`Endpoints` immediately, while `DRAIN_MS` keeps its HTTP server open long
+enough for any request that was already routed to it to finish instead
+of being cut off mid-flight. Each piece covers a different half of the
+transition (new pod coming up / old pod going down); removing any one of
+them reopens the gap the broken profile demonstrates above.
+
+**The sequence this produces, with `replicas: 2`:** pod count goes _up_
+first, never down. A new pod is created (surge, now 3) while both old
+pods keep serving untouched; only once that new pod passes `/readyz`
+does Kubernetes touch an old one — it `SIGTERM`s it and starts the
+second new pod in parallel, so the count can briefly touch 4 while the
+old pod drains. The number of pods actually able to serve traffic never
+drops below 2 — only the total pod count briefly bulges above it.
+Verified live with `kubectl get pods -w` during a real rollout.
 
 ## Grading
 
