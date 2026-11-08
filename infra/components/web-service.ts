@@ -39,7 +39,14 @@ export class WebService extends pulumi.ComponentResource {
       {
         metadata: { namespace: args.namespace, name, labels },
         spec: {
-          replicas: args.replicas,
+          // Once an HPA exists it sets this field directly, under its
+          // own field manager — if Pulumi kept asserting a fixed value
+          // here, the next `pulumi up` would fight the HPA's own
+          // decision and revert whatever it scaled to. Omitting the key
+          // (not even `undefined` passed as a concrete value) means
+          // Pulumi's server-side apply never claims this field once an
+          // HPA is attached.
+          ...(args.hpa ? {} : { replicas: args.replicas }),
           selector: { matchLabels: labels },
           strategy: {
             type: 'RollingUpdate',
@@ -70,7 +77,7 @@ export class WebService extends pulumi.ComponentResource {
                   })),
                   envFrom: [{ secretRef: { name: args.secretName } }],
                   resources: {
-                    requests: { cpu: '20m', memory: '48Mi' },
+                    requests: { cpu: '100m', memory: '48Mi' },
                     limits: { memory: '192Mi' },
                   },
                   // "Not ready yet" and "should be killed" are different
@@ -135,6 +142,47 @@ export class WebService extends pulumi.ComponentResource {
       );
     }
 
-    // Later stage adds: if (args.hpa) new k8s.autoscaling.v2.HorizontalPodAutoscaler(...)
+    if (args.hpa) {
+      new k8s.autoscaling.v2.HorizontalPodAutoscaler(
+        name,
+        {
+          metadata: { namespace: args.namespace, name },
+          spec: {
+            scaleTargetRef: {
+              apiVersion: 'apps/v1',
+              kind: 'Deployment',
+              name,
+            },
+            minReplicas: args.hpa.minReplicas,
+            maxReplicas: args.hpa.maxReplicas,
+            metrics: [
+              {
+                type: 'Resource',
+                resource: {
+                  name: 'cpu',
+                  target: {
+                    type: 'Utilization',
+                    averageUtilization: args.hpa.targetCpuPercent,
+                  },
+                },
+              },
+            ],
+            // Kubernetes' own default is 5 minutes, there specifically
+            // to prevent production traffic from flapping-driven
+            // instability — a concern that doesn't apply to this
+            // dev-only stack (nothing real depends on it, and the cost
+            // of reacting faster here is zero). 30s is a deliberate,
+            // permanent choice for *this* stack, the way a real
+            // per-environment values file would set it — not a demo-only
+            // override. Production environments should keep the 5-minute
+            // default.
+            behavior: {
+              scaleDown: { stabilizationWindowSeconds: 30 },
+            },
+          },
+        },
+        { parent: this },
+      );
+    }
   }
 }

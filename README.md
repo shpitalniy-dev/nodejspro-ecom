@@ -2811,6 +2811,54 @@ has 1 currently"`.
 The cluster self-healed back to 2 `Running`/`Ready` pods on its own
 within a few seconds — no teardown or restore step needed.
 
+### HorizontalPodAutoscaler (`npm run demo:hpa`)
+
+An HPA (`infra/components/web-service.ts`, `minReplicas: 2,
+maxReplicas: 4, targetCpuPercent: 50`) needs a metrics source to scale
+on at all — this `kind` cluster doesn't ship one by default
+(`kubectl top nodes` fails with `Metrics API not available` until
+`scripts/cluster-up.sh` installs metrics-server). That install belongs
+in the cluster bootstrap script, not `infra/`'s own Pulumi program:
+metrics-server is platform infrastructure every workload in the cluster
+shares, not something this one service owns. kind's kubelet serving
+certs also aren't signed for metrics-server's default TLS verification,
+so the install patches in `--kubelet-insecure-tls` (kind's own
+documented fix).
+
+**Once the HPA exists, the Deployment stops asserting `replicas` at
+all** (`web-service.ts`) — an HPA sets that field directly, under its
+own field manager, and if Pulumi kept asserting a fixed value on every
+`pulumi up`, it would fight the HPA's own decision and revert whatever
+it scaled to. This relies on Pulumi's server-side apply never
+re-claiming a field it stops mentioning — worth verifying live rather
+than trusting: scale up under load, run `npm run up` again, and confirm
+the HPA-set replica count survives (see `### HW #28 commands`).
+
+The demo's load generator (`demo/demo-hpa.mjs`) is deliberately
+**concurrent** — 60 parallel workers hammering `/healthz` through the
+Service — unlike the rollout demo's sequential one; a handful of
+requests per second would never meaningfully exceed the container's
+`100m` CPU request.
+
+`behavior.scaleDown.stabilizationWindowSeconds: 30` — Kubernetes' own
+default is 5 minutes, there specifically to protect _production_
+traffic from flapping-driven instability. That concern doesn't apply to
+this dev-only stack (there's only the one `dev` stack, nothing real
+depends on it), so `30` is a deliberate, permanent choice for this
+environment — the kind of thing a real per-environment values file
+would set, not a demo-only toggle. Production environments should keep
+the 5-minute default. Because it's permanent rather than something the
+demo flips on and off, `demo/demo-hpa.mjs` doesn't touch `infra/` or
+need any secrets — it only needs cluster access.
+
+Measured locally (`100m` CPU request, permanent `30s` window): idle
+settled at `7%–13%/50%` (vs. `33%–81%` at the old `20m`) — comfortably
+below target, finally distinguishable from real load. Under the
+60-worker load, utilization hit `779%` and the HPA scaled 2 → 4; after
+load stopped it dropped back to single digits and scaled cleanly back
+to 2, settling there — a complete round trip with no secrets exported
+and no lingering oscillation.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.

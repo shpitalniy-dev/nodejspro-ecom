@@ -59,6 +59,10 @@ new WebService('nodejspro-ecom-api', {
   // is allowed (1 remains), evicting a second while the first hasn't
   // been replaced yet is rejected (0 would remain) — see demo:pdb.
   pdbMinAvailable: 1,
+  // Real traffic through /healthz pushes utilization well past 50%
+  // without needing CPU-burning app code (see web-service.ts's cpu
+  // request for why 100m, not something smaller).
+  hpa: { minReplicas: 2, maxReplicas: 4, targetCpuPercent: 50 },
   // Plain placeholders, not secrets: DataSourceService, RabbitMqService and
   // RedisConnectionService are all deliberately lazy (see their own
   // comments) and GET /health never touches any of them, so nothing on

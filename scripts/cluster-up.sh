@@ -42,3 +42,25 @@ echo "loading $IMAGE into $CLUSTER"
 kind load docker-image "$IMAGE" --name "$CLUSTER"
 
 kubectl --context "kind-$CLUSTER" get nodes
+
+# metrics-server — platform-level add-on shared by every workload in the
+# cluster, not this app's own concern (same reasoning as why kind's own
+# node setup above isn't part of infra/'s Pulumi program). Without it
+# the HPA (Stage 8) would sit at <unknown> forever. Vendored locally
+# (k8s/metrics-server.yaml, see its own header comment) rather than
+# fetched from GitHub's release-asset CDN at apply time — that CDN had a
+# sustained outage while this was first set up, and grading shouldn't
+# depend on it being up. kind's kubelet serving certs aren't signed for
+# metrics-server's default TLS verification — the official manifest
+# needs --kubelet-insecure-tls added, kind's own docs recommend exactly
+# this patch.
+kubectl --context "kind-$CLUSTER" apply -f k8s/metrics-server.yaml
+
+if ! kubectl --context "kind-$CLUSTER" get deployment metrics-server -n kube-system \
+    -o jsonpath='{.spec.template.spec.containers[0].args}' | grep -q kubelet-insecure-tls; then
+  kubectl --context "kind-$CLUSTER" patch deployment metrics-server -n kube-system --type=json \
+    -p '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
+fi
+
+kubectl --context "kind-$CLUSTER" wait --for=condition=Available deployment/metrics-server \
+  -n kube-system --timeout=90s
