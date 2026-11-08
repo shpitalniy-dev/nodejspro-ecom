@@ -32,7 +32,11 @@ async function bootstrap() {
   }
 
   await app.listen(port);
-  app.get(ReadinessService).markReady();
+
+  const readiness = app.get(ReadinessService);
+
+  readiness.setHttpServer(app.getHttpServer());
+  readiness.markReady();
   console.log(`Listening on port ${port}`);
 }
 

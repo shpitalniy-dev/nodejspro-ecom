@@ -76,6 +76,12 @@ export class WebService extends pulumi.ComponentResource {
                     value,
                   })),
                   envFrom: [{ secretRef: { name: args.secretName } }],
+                  // Numeric UID, not the image's `nonroot` name — the
+                  // kubelet can't resolve a name, only a number,
+                  // against this: combining runAsNonRoot:true with a
+                  // named distroless tag is a documented
+                  // CreateContainerConfigError, not this.
+                  securityContext: { runAsNonRoot: true, runAsUser: 65532 },
                   resources: {
                     requests: { cpu: '100m', memory: '48Mi' },
                     limits: { memory: '192Mi' },
@@ -93,9 +99,24 @@ export class WebService extends pulumi.ComponentResource {
                           periodSeconds: 1,
                           failureThreshold: 1,
                         },
+                        // Bonus: slow/uneven starts (migrations, cache
+                        // warmup) belong here, not as a hand-tuned
+                        // livenessProbe.initialDelaySeconds — while this
+                        // hasn't gone green once, liveness/readiness
+                        // don't run at all; once it has, it's disabled
+                        // forever. 60s is a generous, realistic budget
+                        // that doesn't need re-tuning every time startup
+                        // time changes, unlike a magic initialDelay.
+                        startupProbe: {
+                          httpGet: { path: '/healthz', port: 3000 },
+                          periodSeconds: 2,
+                          failureThreshold: 30,
+                        },
                         livenessProbe: {
                           httpGet: { path: '/healthz', port: 3000 },
-                          initialDelaySeconds: 15,
+                          // No initialDelaySeconds — startupProbe above
+                          // already guarantees this passed once before
+                          // liveness is ever evaluated.
                           periodSeconds: 10,
                           failureThreshold: 3,
                         },

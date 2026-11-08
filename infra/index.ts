@@ -82,7 +82,11 @@ new WebService('nodejspro-ecom-api', {
     // Deployment-lifecycle knobs, not app config — read directly from
     // process.env in src/index.ts and ReadinessService, not env.schema.ts.
     DRAIN_MS: '5000',
-    WARMUP_MS: process.env.WARMUP_MS ?? '0',
+    // ~4s permanent default — simulates a real service's migrations/DB
+    // pool warmup. Without it, even the broken profile can measure a
+    // false zero: the app would finish starting before a rolling
+    // update could ever catch it mid-startup.
+    WARMUP_MS: process.env.WARMUP_MS ?? '4000',
     REV: process.env.REV ?? '1',
   },
 });

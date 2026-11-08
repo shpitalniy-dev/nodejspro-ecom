@@ -2372,16 +2372,16 @@ demos fully.
 
 ### Environment variables
 
-| Variable                 | Джерело                               | Навіщо                                                                                                                     |
-| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
-| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
-| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
-| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                                                     |
-| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                                                                   |
-| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)                 | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
-| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
-| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
+| Variable                 | Джерело                             | Навіщо                                                                                                                     |
+| ------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`       | compose (in-network) / vault (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
+| `STORAGE_REGION`         | default (`us-east-1`)               | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
+| `STORAGE_ACCESS_KEY`     | vault (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
+| `STORAGE_SECRET_KEY`     | vault (#11)                         | Garage secret key — same pair as above                                                                                     |
+| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)              | the private bucket presigned PUTs target                                                                                   |
+| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)               | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
+| `GARAGE_RPC_SECRET`      | vault (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
+| `GARAGE_ADMIN_TOKEN`     | vault (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
 
 `GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` aren't in `src/config/env.schema.ts`
 on purpose — the NestJS app never reads them, only the `garage` container
@@ -2469,6 +2469,63 @@ Local-only: everything in this section runs on a single-node `kind`
 cluster, no cloud account or payment method needed. This section grows
 across HW #28's own stages — only cluster bootstrap exists so far.
 
+### Production image (`npm run demo:image`)
+
+`docker/Dockerfile` branches a new `secret-demo` + `distroless` path off
+the existing `base`/`deps`/`builder`/`runner` stages (6 `FROM` lines
+total) — `docker-compose.yml`'s `api`/`garage-init` services still build
+exactly as before; `--target distroless` selects the new path for the
+k8s image only.
+
+**Why distroless, specifically.** Not image size — the HW's own
+benchmark puts distroless only ~3.5% smaller than `alpine`. The real
+win is what's _missing_: no `sh`, no shell at all, in the final image.
+After an RCE, an attacker with no shell has meaningfully less to work
+with than one who can just `sh -c` their next step.
+
+**`USER 65532`, not `USER nonroot`.** The base image's own `:nonroot`
+tag sets a numeric UID under the hood, but writing the _name_ in the
+Dockerfile means Kubernetes' `runAsNonRoot: true` check fails later
+with `CreateContainerConfigError` — the kubelet verifies the UID is
+non-zero, and it can't resolve a username to check it. Numeric avoids
+this entirely; see `infra/components/web-service.ts`'s container
+`securityContext` for where this actually gets enforced at the pod
+level too.
+
+**Build-time secret, via BuildKit's `--mount=type=secret` only.** No
+real private npm registry in this project, so `secret-demo` only proves
+the mechanism: a demo token (`.npm_token`, gitignored) is read inside
+that stage and must never land in the final image. `ARG`/`ENV` would
+leak it into the image's own metadata (`docker history`); `COPY` +
+`rm` in a later layer would leak it into that _earlier_ layer's actual
+bytes (a later `rm` only adds a whiteout — the file is invisible in the
+final filesystem, but still sitting in the layer blob underneath). A
+`--mount=type=secret` is only ever available inside that one `RUN`,
+never written to any layer at all.
+
+**`npm run demo:image`'s contract** (`scripts/demo-image.mjs`) — six
+numbers, each computed from a live `docker` command against the
+_actual built image_, never printed from a guess:
+
+| Key                | Measured via                                                                                        | What it proves                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `stages`           | `docker/Dockerfile` itself, counting `FROM` lines                                                   | multi-stage, not a single flat build                            |
+| `shell-inside`     | `docker run --entrypoint sh <image> -c true` — `0` if that fails to launch                          | no shell exists to drop into after an RCE                       |
+| `runtime-uid`      | `docker image inspect --format '{{.Config.User}}'`                                                  | non-root, and numeric (see above)                               |
+| `token-in-history` | `docker history --no-trunc`                                                                         | the secret isn't sitting in the image's own build metadata      |
+| `token-in-config`  | files found inside the extracted `docker save` tarball that aren't themselves another layer tarball | the secret isn't sitting in any layer's config JSON             |
+| `token-in-layers`  | files found inside the extracted `docker save` tarball that _are_ another layer tarball             | the secret isn't sitting in any layer's actual filesystem bytes |
+
+Three separate channels for the token checks because no single tool
+sees both leak paths: `ARG`/`ENV` shows up in `docker history` but
+leaves the layers themselves clean; `COPY` + `rm` in a later layer does
+the opposite — clean history, but the bytes are still in an earlier
+layer, only visible by actually unpacking `docker save`'s output.
+
+Measured on this machine: `stages=6`, `shell-inside=0`,
+`runtime-uid=65532`, `token-in-history=0`, `token-in-config=0`,
+`token-in-layers=0`.
+
 ### kind, not minikube — checked, not assumed
 
 `docker info` on the machine this was built on: **3.827 GiB total
@@ -2537,6 +2594,19 @@ required field in `env.schema.ts` (`DB_URL`, `BROKER_URL`, `REDIS_URL`,
 in the Deployment spec: not secret (they're locations, not credentials),
 and never dereferenced on this pod's actual request path.
 
+**Industry-standard alternatives to this wrapper-script flow.** This
+setup reads the secret from the vault into the shell running `pulumi
+up`, which then writes it into a `k8s.core.v1.Secret` the program
+creates directly — fine for a local, single-operator `dev` stack, but
+two established patterns replace the human-in-the-loop step for a real
+team/cluster: **ESO** (External Secrets Operator) runs inside the
+cluster and syncs a vault secret into a native `Secret` object on its
+own schedule, so no one's shell ever holds the value; **CSI** (the
+Secrets Store CSI Driver) skips the `Secret` object entirely and mounts
+the vault value straight into the pod's filesystem at run time. Neither
+is installed here — not needed for one local stack — but either is the
+real next step once more than one person needs to deploy this.
+
 ### Probes and graceful shutdown
 
 Two new, separate endpoints (`src/controllers/health/health.controller.ts`),
@@ -2585,10 +2655,12 @@ easy to conflate:
   block), shipped into the running pod, and read via `process.env` inside
   the app itself: `DRAIN_MS` by `ReadinessService`'s shutdown sleep,
   `WARMUP_MS` by the pre-`listen()` delay in `src/index.ts`. `WARMUP_MS`
-  defaults to `0` everywhere; `demo/demo-rollout.mjs` raises it to
-  actually exercise the HW's own warned-about failure mode — an app that
-  starts faster than a rolling update can catch it mid-startup measures a
-  false zero.
+  defaults to `4000` **permanently**, not a demo-only raise — the HW's
+  own guidance: a near-instant-starting app can make even a broken
+  rollout profile measure a false zero, because the rolling update
+  never catches it mid-startup. 4s stands in for a realistic
+  migrations/DB-pool warmup, the same way a real service would take a
+  few seconds before it can actually serve anything.
 - **`HARDENED`** is a **Pulumi-program-time** toggle only — read by
   `infra/index.ts` itself (on the machine running `pulumi up`, not inside
   the pod) to pick which `WebService` branch to build. It never reaches
@@ -2610,9 +2682,12 @@ restart` injects for the same reason. Real production avoids needing
   this at all by tagging each build uniquely (a commit SHA or digest)
   instead of reusing a static tag.
 
-All four default to today's committed values (`hardened:true`,
-`WARMUP_MS:0`, `REV:1`) when unset — `npm run up` with no overrides is
-unaffected; only `demo/demo-rollout.mjs` ever sets them.
+Committed defaults: `hardened:true`, `WARMUP_MS:4000`, `REV:1`. `npm run
+up` with nothing exported deploys exactly that. `demo/demo-rollout.mjs`
+bumps `REV` itself each run (to force the one rollout it measures) but
+never touches `HARDENED`/`WARMUP_MS` — to see the broken profile fail
+instead, deploy it yourself first (`HARDENED=false npm run up`), then
+run the demo again.
 
 **The `hardened` flag** on `WebServiceArgs` controls `strategy.rollingUpdate`,
 `terminationGracePeriodSeconds`, and both probes together, as one flag —
@@ -2622,6 +2697,23 @@ they only make sense as a set. `hardened: true` (what's deployed now):
 unexamined default of `30`), both probes present. `hardened: false` is
 what Stage 6's demo flips to, to produce the "broken" comparison profile
 from the exact same component.
+
+**Bonus: `startupProbe`, not a bigger `livenessProbe.initialDelaySeconds`.**
+A slow/uneven start (migrations, cache warmup) is tempting to handle by
+just padding `initialDelaySeconds` until it's bigger than the worst-case
+startup time — but that's a magic number that has to be re-tuned by
+hand every time startup time changes, and for that whole padded window
+liveness isn't actually watching for a real hang either. `startupProbe`
+(`web-service.ts`, same `/healthz`, `periodSeconds: 2, failureThreshold:
+30` — a 60s budget) is the structural fix: liveness and readiness don't
+run _at all_ until it passes once, then it disables itself permanently.
+Measured the failure mode directly rather than asserting it: with the
+old pattern (no `startupProbe`, `initialDelaySeconds: 5`) and a
+simulated 30s startup, the pod was killed and restarted at **~38s** —
+_before_ it ever finished starting, which would just repeat forever if
+startup is consistently that slow. With `startupProbe`'s 60s budget,
+the same 30s startup is comfortably inside it and liveness never even
+evaluates until the app is actually up.
 
 ### Working with the cluster
 
@@ -2704,45 +2796,109 @@ all still there the moment it's started again.
 
 ### Rollout demo (`npm run demo:rollout`)
 
-`demo/demo-rollout.mjs` proves zero-downtime actually depends on the
-probes/strategy, not luck: it runs a real HTTP load generator through a
-real rolling update, once against the deliberately "broken" profile
-(`hardened:false` — no probes, default-ish `{maxUnavailable:1,
-maxSurge:1}` strategy) and once against the hardened one, and reports
-what actually got dropped in each.
+`demo/demo-rollout.mjs` is criterion 6's own measurement, not a claim:
+it reads whatever profile is currently deployed (`profile=1` if
+`readinessProbe` is present, else `0`), pauses the HPA for the duration
+(see below for why and how), fires ~30 concurrent workers at
+`GET /healthz`, and triggers exactly one real rollout (bumps `REV`,
+which forces a genuine pod-template change — see `WARMUP_MS`/`REV`
+above for why that's necessary). Every response code (or `000` for a
+connection that never completed) gets appended to a file as it happens;
+`requests`/`ok`/`failed` are computed by reading that file back
+afterward, never from an in-memory tally.
 
-It polls `GET /healthz` through the Service (`http://localhost:8080`),
-not a business endpoint — this deployment has no reachable Postgres (see
-above), so `GET /products` would 500 regardless of rollout health,
-telling you nothing about the rollout itself. `/healthz` is the honest
-stand-in: cheap, always-200 server-side, never touches a dependency, so
-any non-200 or connection error the load generator sees is attributable
-purely to routing/startup timing. Real production zero-downtime testing
-hits real business traffic — scoped out here only because nothing else
-is reachable in this cluster.
+**The load generator runs _inside_ the cluster**, not from this host —
+a disposable pod (`curlimages/curl`) gets `kubectl exec`'d into, hitting
+the Service's cluster-internal DNS name (`nodejspro-ecom-api
+.nodejspro-ecom.svc.cluster.local`), not `localhost:8080`. This wasn't
+the original design — caught live, the hard way: the exact same load
+and the exact same rollout measured through this host's own
+`localhost:8080` (kind's `extraPortMappings` → Docker Desktop's own
+port-forwarding → the kind node → kube-proxy → the pod) showed a small
+but real, reproducible failure rate at high request volume. Measuring
+the _identical_ load from a pod running inside the cluster instead —
+bypassing that whole host-side forwarding chain — showed zero. That
+proved the gap was this local Mac/Docker-Desktop/kind hostPort chain's
+own quirk, not a Kubernetes-level zero-downtime gap: a real client of
+this Service is inside the cluster's own network, so measuring from
+there is both the fairer test and the one that actually matches what
+criterion 6 is asking.
 
-`WARMUP_MS` (raised to `1500` for both profiles during this demo) exists
-to defeat the HW's own warned-about failure mode: an app that starts
-faster than a rolling update can catch it mid-startup measures a false
-zero. In the broken profile specifically, with no readinessProbe,
-Kubernetes marks a pod Ready the instant its container starts —
-regardless of whether `WARMUP_MS` has actually elapsed and `app.listen()`
-has bound the port yet. kube-proxy load-balances across both Endpoints,
-so some fraction of requests during that window hit a pod with nothing
-listening on `:3000` — a real, reproducible connection-refused, not a
-contrived one. The script restores the committed defaults
-(`hardened:true`, `WARMUP_MS:0`, `REV:1`) in a `finally` block once both
-phases finish, so the cluster is left exactly as the rest of this README
-describes it, not mid-demo.
+One genuine server-side fix came out of chasing this down anyway, kept
+because it's correct regardless: `ReadinessService.beforeApplicationShutdown`
+now also calls the HTTP server's `closeIdleConnections()` the moment it
+flips `ready=false` (`src/services/readiness.service.ts`,
+`src/index.ts` wires the server reference in). A client holding a
+keep-alive connection from before `SIGTERM` has no way to know this pod
+is draining — readiness only stops the Service from handing this pod's
+IP to _new_ connections. Without this, that client's next request
+reuses the old socket and gets a connection reset the instant `dispose()`
+finally closes it, even though the deployment itself never actually
+went unavailable. `closeIdleConnections()` evicts only _idle_ keep-alive
+sockets right away — a request already in flight keeps running — so
+the client reconnects and lands on a pod that's actually still
+accepting.
 
-Measured locally (one run — see the script's own output for the
+**Why pause the HPA first, and why by deleting it rather than pinning
+`min`/`max`.** Caught live: this demo's own load is real CPU work,
+enough to trigger the Stage 8 HPA mid-measurement — a second, unrelated
+scaling event confounds the rollout being measured. Pinning
+`minReplicas`/`maxReplicas` to freeze it was tried first and dropped:
+it still leaves a real propagation-timing question — how long until
+the HPA controller and metrics-server's own scrape cycle actually
+catch up to the pin? Caught live, twice: once patching mid-scale
+produced a chaotic multi-ReplicaSet transition of its own, and once a
+scale decision already in flight executed _after_ the pin anyway,
+scaling 2→4→2 during the measurement despite it. A longer wait after
+patching only narrows that window, never closes it — it's always a
+guess, not a guarantee.
+
+The actual fix: delete the HPA object outright for the duration, then
+recreate it from a saved copy of its spec in a `finally` block. No
+controller watching it, nothing can scale, by construction — the same
+reasoning chaos-engineering tooling (Litmus, Gremlin-style runbooks)
+gives for "disable the autoscaler before the experiment, restore it
+after." A `process.on('exit')` handler recreates it even on an
+unexpected crash — this already happened once, from an unrelated
+unhandled-rejection bug caught while building this script, which would
+otherwise have left the cluster without an HPA at all.
+
+It polls `GET /healthz`, not a business endpoint — this deployment has
+no reachable Postgres (see above), so `GET /products` would 500
+regardless of rollout health, telling you nothing about the rollout
+itself. `/healthz` is the honest stand-in: cheap, always-200
+server-side, never touches a dependency, so any non-200 or connection
+error is attributable purely to routing/startup timing. Real production
+zero-downtime testing hits real business traffic — scoped out here only
+because nothing else is reachable in this cluster.
+
+To see the broken profile actually fail instead of the committed
+hardened one, deploy it yourself first — `HARDENED=false npm run up` —
+then run `npm run demo:rollout` again; it measures whatever's currently
+live, it doesn't choose for you.
+
+Measured locally (one run each — see the script's own output for the
 authoritative numbers on any given run, which will vary with timing):
 
-- **broken (`hardened:false`)**: 234 requests, **4 failures (1.7%)**, all
-  within the first 388ms after load started — consistent with the new,
-  unprobed pod being marked Ready (and getting traffic) before its
-  `WARMUP_MS` sleep finished and `app.listen()` actually bound the port.
-- **hardened (`hardened:true`)**: 237 requests, **0 failures**.
+- **hardened (`profile=1`, committed default)**: `requests=24437`,
+  `ok=24437`, `failed=0`, `rollout-seconds=21.0` — reproduced across
+  four separate runs (24437 / 24595 / 24122 / 21966 requests, `failed=0`
+  every time).
+- **broken (`profile=0`)**: `requests=25245`, `ok=22270`, `failed=2975`
+  (11.8%) — in line with the HW's own expectation that the broken
+  profile's failure rate "floats around roughly one in six," not a
+  fixed number. Getting a clean measurement took a real fix: an earlier
+  attempt used `HARDENED=false npm run up` as a one-off command prefix,
+  which only sets the variable for that one command, not the shell —
+  `demo-rollout.mjs`'s _own_ internal `npm run up` call (bumping `REV`)
+  inherits the parent shell's env, not that one-off prefix, so its
+  first rollout silently flipped the Deployment straight back to
+  `hardened:true` before any load-bearing measurement happened, and
+  what got measured was actually a broken-to-hardened _transition_, not
+  a clean broken-profile rollout. Fix: `export HARDENED=false` first
+  (persisted for the shell), confirm with `kubectl get deploy … -o
+json` that no `readinessProbe` is present, _then_ run the demo in
+  that same shell — restored with a plain `npm run up` afterward.
 
 **Why the hardened profile has no downtime.** Three mechanisms acting
 together, not one: (1) the **readinessProbe** (`/readyz`) is what adds a
@@ -2794,22 +2950,20 @@ bypasses the PDB entirely; it isn't an eviction.
 `policy/v1 Eviction` object for each of the two pods. `minAvailable: 1`
 means evicting _one_ pod is allowed (1 remains), but evicting the
 _second_ while the first hasn't been replaced yet should be rejected (0
-would remain). No restore step needed afterward — evicting one pod is a
-normal, self-healing disruption the Deployment controller replaces on
-its own.
+would remain) — true only at exactly 2 replicas, since `replicas -
+minAvailable` has to equal 1 for a single eviction to consume the whole
+budget. Caught live: running this right after the HPA had scaled to 3
+for an unrelated reason made the second eviction wrongly succeed too
+(1 pod still remained, satisfying `minAvailable: 1` either way) — so
+this script deletes the HPA and scales to exactly 2 itself first (same
+technique and same reasoning as `demo/demo-rollout.mjs`'s `pauseHpa`),
+restoring the HPA from a saved copy of its spec in a `finally` block.
+It prints `healthy`/`minAvailable` read live from
+the PDB's own `.status.currentHealthy`/`.spec.minAvailable` (not
+guessed), then `evict-1`/`evict-2` — the two real eviction statuses.
 
-Measured locally (one run — see the script's own output for the
-authoritative statuses on any given run):
-
-- pod A eviction: **`201`** — allowed, 1 pod remains, satisfies
-  `minAvailable: 1`.
-- pod B eviction (immediately after, while A is still draining):
-  **`429 Too Many Requests`**, with the PDB's own message in the body:
-  `"The disruption budget nodejspro-ecom-api needs 1 healthy pods and
-has 1 currently"`.
-
-The cluster self-healed back to 2 `Running`/`Ready` pods on its own
-within a few seconds — no teardown or restore step needed.
+Measured locally: `healthy=2`, `minAvailable=1`, `evict-1=201`,
+`evict-2=429`.
 
 ### HorizontalPodAutoscaler (`npm run demo:hpa`)
 
@@ -3038,14 +3192,19 @@ new:
 
 ```bash
 export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
-export PULUMI_CONFIG_PASSPHRASE=hw28-grading
+export PULUMI_CONFIG_PASSPHRASE=hw28-dev   # matches infra/Pulumi.dev.yaml's committed encryptionsalt
 
 npm --prefix infra ci
 npx --prefix infra tsc --noEmit
+pulumi -C infra stack init dev   # fresh .pulumi/ has no stack yet — `up` fails with "no stack selected" without this
 printf 'dummy-npm-token' > .npm_token   # build-time secret demo; never in git
 npm run image:build
 npm run cluster:up
 npm run up
+npm run demo:image
+npm run demo:rollout
+npm run demo:pdb
+npm run demo:hpa
 ```
 
 Teardown: `npm run destroy && npm run cluster:down`.
