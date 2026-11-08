@@ -2537,6 +2537,142 @@ required field in `env.schema.ts` (`DB_URL`, `BROKER_URL`, `REDIS_URL`,
 in the Deployment spec: not secret (they're locations, not credentials),
 and never dereferenced on this pod's actual request path.
 
+### Probes and graceful shutdown
+
+Two new, separate endpoints (`src/controllers/health/health.controller.ts`),
+matching the HW's own `/healthz`/`/readyz` naming — `/health` and
+`/health/db` are untouched, since `docker/Dockerfile`'s `runner` target
+(used by `docker-compose.yml`) still depends on `/health` for its
+`HEALTHCHECK`.
+
+- **`GET /healthz`** — liveness. Shallow, never touches a downstream
+  dependency. Coupling liveness to DB/broker/cache health is a named
+  Kubernetes anti-pattern: one shared dependency blip restarts every pod
+  of every service depending on it, worsening an incident instead of
+  fixing it.
+- **`GET /readyz`** — readiness, backed by `ReadinessService`
+  (`src/services/readiness.service.ts`). Failing this only pulls the pod
+  out of load-balancing rotation — no restart, no cascade — which is why
+  it's the one safe to flip during shutdown.
+
+**SIGTERM ordering.** `ReadinessService` implements NestJS's
+`beforeApplicationShutdown(signal)`, not a hand-rolled
+`process.on('SIGTERM', ...)`. Checked `@nestjs/core`'s actual shutdown
+sequence before relying on it: `callDestroyHook` (every provider's
+`onModuleDestroy`) → `callBeforeShutdownHook` (`beforeApplicationShutdown`)
+→ `dispose()` (closes the HTTP server) → `callShutdownHook`. Only
+`beforeApplicationShutdown` runs _before_ the socket actually closes, so
+that's where "flip `ready=false`, then wait `DRAIN_MS`" has to live — a
+separate signal handler would race Nest's own (already enabled via
+`app.enableShutdownHooks()`). This is also why `DatabaseService`,
+`DataSourceService`, `RabbitMqService`, and `RedisConnectionService`
+(base class for `CacheRedisConnection`/`QueueRedisConnection`) implement
+`onApplicationShutdown` rather than `onModuleDestroy`: `onModuleDestroy`
+runs _before_ `beforeApplicationShutdown`, so it would close every live
+dependency connection before the drain window even started.
+`onApplicationShutdown` runs last, after `dispose()` has already closed
+the HTTP server — by then no in-flight or racing request can still need
+one of these connections.
+
+**`DRAIN_MS`/`WARMUP_MS`/`REV`** are deployment-lifecycle knobs, not app
+config — read directly from `process.env` in `src/index.ts` and
+`ReadinessService`, deliberately outside `env.schema.ts` (which has no
+`.strict()`, so it already ignores unknown keys — nothing to break by
+keeping these separate). `WARMUP_MS` defaults to `0` everywhere; Stage
+6's demo raises it to actually exercise the HW's own warned-about failure
+mode (an app that starts faster than a rolling update can catch it mid-
+startup measures a false zero). `REV` has no behavior yet — Stage 6 bumps
+it to force a real pod-template change, since rebuilding an image under
+the same tag doesn't trigger a rollout on its own.
+
+**The `hardened` flag** on `WebServiceArgs` controls `strategy.rollingUpdate`,
+`terminationGracePeriodSeconds`, and both probes together, as one flag —
+they only make sense as a set. `hardened: true` (what's deployed now):
+`maxUnavailable: 0`/`maxSurge: 1`, grace `20s` (comfortably more than
+`DRAIN_MS`'s `5000`, and a deliberate value, not Kubernetes' own
+unexamined default of `30`), both probes present. `hardened: false` is
+what Stage 6's demo flips to, to produce the "broken" comparison profile
+from the exact same component.
+
+### Working with the cluster
+
+Two different tools, two different jobs — mixing them up is the easiest
+way to get confused:
+
+- **Pulumi** (`infra/`) is declarative: it owns the _desired_ state
+  (replica count, image, probes, env). `pulumi up` diffs the real cluster
+  against `infra/index.ts` and reconciles it. Anything meant to persist
+  goes through this code — a `kubectl` change Pulumi doesn't know about
+  (e.g. `kubectl scale`) gets reverted on the next `pulumi up`.
+- **kubectl** is imperative: for _observing_ the cluster, and for one-off
+  operational actions whose effects Kubernetes' own controllers reconcile
+  around (deleting a pod doesn't change how many replicas _should_
+  exist — the Deployment controller just creates a replacement).
+
+```bash
+# Pulumi — changes what should exist
+pulumi -C infra preview        # dry-run diff, no changes applied
+npm run up                     # apply infra/index.ts (pulumi up --yes)
+npm run destroy                # tear down every resource it created
+pulumi -C infra stack ls       # stacks in the local .pulumi/ backend
+
+# kubectl — observe, or one-off ops the controllers reconcile around
+kubectl -n nodejspro-ecom get pods -o wide
+kubectl -n nodejspro-ecom get deploy,svc
+kubectl -n nodejspro-ecom describe pod <pod>
+kubectl -n nodejspro-ecom logs -f <pod>
+kubectl -n nodejspro-ecom delete pod <pod>                               # forces SIGTERM; controller replaces it
+kubectl -n nodejspro-ecom rollout restart deployment/nodejspro-ecom-api  # re-pulls a freshly `kind load`-ed same-tag image
+```
+
+**kubectl doesn't reach pods directly.** kind runs the whole cluster as
+one Docker container (`nodejspro-ecom-control-plane`) with containerd
+nested inside it running the actual pods (`docker exec
+nodejspro-ecom-control-plane crictl ps` shows them). kind publishes the
+API server's port to a random port on `localhost` — that's the
+`https://127.0.0.1:<port>` in `kubectl config view` — so kubectl always
+talks to the API server, never straight to a pod; `logs`/`exec` work
+because the API server proxies them through the kubelet. The pod network
+(`10.244.0.x`) itself isn't routable from the host at all, which is why
+curling a pod's own IP (e.g. to catch `/readyz` mid-drain) needs a
+disposable pod running _inside_ the cluster, not `curl` from a host
+terminal.
+
+**Reaching the app from the host** is a separate chain: pod `:3000` →
+Service `nodePort: 30080` → kind's `extraPortMappings` → host `:8080`
+(`k8s/kind-config.yaml`) — `http://localhost:8080`, not `:3000` (`:3000`
+is only live when running the plain `docker compose` stack instead).
+
+**Stopping vs. pausing.** `npm run destroy` only removes the
+Pulumi-managed resources (Namespace/Secret/Deployment/Service) — the kind
+cluster itself keeps running, empty. The full teardown is both, in
+order: `npm run destroy && npm run cluster:down`. One gotcha:
+`pulumi destroy` still re-executes `infra/index.ts` to build the resource
+graph before it can diff what to delete, so the same `REQUIRED`
+env-var check runs too (`JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`/
+`REFRESH_TOKEN_PEPPER` must still be exported in the current shell, or
+destroy fails before touching anything).
+
+If you just want to stop for now and pick back up later — no rebuild, no
+`pulumi up`, nothing redone — don't destroy anything, pause it instead:
+
+```bash
+# pause just the pods, keep the cluster running
+kubectl -n nodejspro-ecom scale deployment/nodejspro-ecom-api --replicas=0
+# resume: scale back to 2, or just `npm run up` — Pulumi's desired state
+# still says replicas: 2, so it reconciles back up on its own
+
+# pause the whole kind cluster (heaviest pause, nothing deleted)
+docker stop nodejspro-ecom-control-plane
+# resume:
+docker start nodejspro-ecom-control-plane
+```
+
+`docker stop`/`start` on the control-plane container is exactly what a
+Docker Desktop quit/restart does to it — the container exits (`Exited
+(137)`) but nothing about it is deleted, so pods/Deployment/Service are
+all still there the moment it's started again.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.

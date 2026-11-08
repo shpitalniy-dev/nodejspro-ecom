@@ -14,6 +14,11 @@ export interface WebServiceArgs {
   secretName: pulumi.Input<string>;
   // Plain, non-secret placeholders only — see infra/index.ts for why.
   env: Record<string, string>;
+  // Drives strategy + both probes together — one flag, not three, because
+  // they only make sense as a set, and Stage 6's demo needs to flip all
+  // three at once (same component, `hardened: false`) to produce its
+  // "broken" profile for comparison.
+  hardened: boolean;
   // Reserved for later stages — no PDB/HPA created while these are unset.
   pdbMinAvailable?: number;
   hpa?: { minReplicas: number; maxReplicas: number; targetCpuPercent: number };
@@ -36,9 +41,20 @@ export class WebService extends pulumi.ComponentResource {
         spec: {
           replicas: args.replicas,
           selector: { matchLabels: labels },
+          strategy: {
+            type: 'RollingUpdate',
+            rollingUpdate: args.hardened
+              ? { maxUnavailable: 0, maxSurge: 1 }
+              : { maxUnavailable: 1, maxSurge: 1 },
+          },
           template: {
             metadata: { labels },
             spec: {
+              // 20 (hardened) / 30 (default) are both comfortably bigger
+              // than DRAIN_MS's default 5000ms — 20 is the deliberate,
+              // named value a real drain needs, not Kubernetes' own
+              // unexamined default of 30.
+              terminationGracePeriodSeconds: args.hardened ? 20 : 30,
               containers: [
                 {
                   name: 'api',
@@ -57,13 +73,31 @@ export class WebService extends pulumi.ComponentResource {
                     requests: { cpu: '20m', memory: '48Mi' },
                     limits: { memory: '192Mi' },
                   },
+                  // "Not ready yet" and "should be killed" are different
+                  // questions on different paths — readinessProbe only
+                  // pulls this pod out of rotation (no restart, no
+                  // cascade); livenessProbe on the SAME path as readiness
+                  // would turn a temporary not-ready state into an
+                  // infinite restart loop.
+                  ...(args.hardened
+                    ? {
+                        readinessProbe: {
+                          httpGet: { path: '/readyz', port: 3000 },
+                          periodSeconds: 1,
+                          failureThreshold: 1,
+                        },
+                        livenessProbe: {
+                          httpGet: { path: '/healthz', port: 3000 },
+                          initialDelaySeconds: 15,
+                          periodSeconds: 10,
+                          failureThreshold: 3,
+                        },
+                      }
+                    : {}),
                 },
               ],
             },
           },
-          // No strategy/probes yet — added in a later stage. Defaults to
-          // Kubernetes' own 25%/25% RollingUpdate, which is exactly the
-          // "no readiness" profile the HW measures the fix against.
         },
       },
       { parent: this },

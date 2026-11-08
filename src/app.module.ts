@@ -39,6 +39,7 @@ import { IdempotencyStore } from './services/idempotency-store.service.ts';
 import { LoggerService } from './services/logger.service.ts';
 import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
 import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
+import { ReadinessService } from './services/readiness.service.ts';
 import { CacheRedisConnection } from './services/redis/cache-redis-connection.service.ts';
 import { QueueRedisConnection } from './services/redis/queue-redis-connection.service.ts';
 import { S3ClientService } from './services/storage/s3-client.service.ts';
@@ -62,6 +63,7 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
     IdempotencyKeyInterceptor,
     LocationHeaderInterceptor,
     DatabaseService,
+    ReadinessService,
     DataSourceService,
     RabbitMqService,
     LoggerService,

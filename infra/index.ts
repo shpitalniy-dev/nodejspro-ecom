@@ -48,6 +48,7 @@ new WebService('nodejspro-ecom-api', {
   image: 'nodejspro-ecom-api:k8s',
   replicas: 2,
   secretName: appSecret.metadata.name,
+  hardened: true,
   // Plain placeholders, not secrets: DataSourceService, RabbitMqService and
   // RedisConnectionService are all deliberately lazy (see their own
   // comments) and GET /health never touches any of them, so nothing on
@@ -64,5 +65,10 @@ new WebService('nodejspro-ecom-api', {
     STORAGE_SECRET_KEY: 'demo',
     STORAGE_BUCKET_UPLOADS: 'uploads',
     STORAGE_BUCKET_ASSETS: 'assets',
+    // Deployment-lifecycle knobs, not app config — read directly from
+    // process.env in src/index.ts and ReadinessService, not env.schema.ts.
+    DRAIN_MS: '5000',
+    WARMUP_MS: '0', // Stage 6's broken-profile demo raises this
+    REV: '1', // Stage 6 bumps this to force a real rollout
   },
 });
