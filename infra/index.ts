@@ -55,6 +55,10 @@ new WebService('nodejspro-ecom-api', {
   replicas: 2,
   secretName: appSecret.metadata.name,
   hardened,
+  // Smallest value that proves anything: evicting one of the 2 replicas
+  // is allowed (1 remains), evicting a second while the first hasn't
+  // been replaced yet is rejected (0 would remain) — see demo:pdb.
+  pdbMinAvailable: 1,
   // Plain placeholders, not secrets: DataSourceService, RabbitMqService and
   // RedisConnectionService are all deliberately lazy (see their own
   // comments) and GET /health never touches any of them, so nothing on

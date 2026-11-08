@@ -117,7 +117,24 @@ export class WebService extends pulumi.ComponentResource {
       { parent: this },
     );
 
-    // Later stage adds: if (args.pdbMinAvailable) new k8s.policy.v1.PodDisruptionBudget(...)
+    // Guards voluntary disruptions outside the Deployment's own control
+    // (kubectl drain, a node scale-down) — maxUnavailable above only
+    // governs rollouts the Deployment controller itself drives. Only
+    // enforced through the real Eviction API, never a plain delete.
+    if (args.pdbMinAvailable) {
+      new k8s.policy.v1.PodDisruptionBudget(
+        name,
+        {
+          metadata: { namespace: args.namespace, name },
+          spec: {
+            minAvailable: args.pdbMinAvailable,
+            selector: { matchLabels: labels },
+          },
+        },
+        { parent: this },
+      );
+    }
+
     // Later stage adds: if (args.hpa) new k8s.autoscaling.v2.HorizontalPodAutoscaler(...)
   }
 }

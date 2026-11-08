@@ -20,6 +20,7 @@
     "demo:multipart": "bash scripts/with-secrets.sh dev node build/controllers/files/demo/demo-multipart.js",
     "demo:nplus1": "bash scripts/with-secrets.sh dev node build/demo-nplus1.js",
     "demo:outbox": "bash scripts/with-secrets.sh dev node build/workers/relay/demo/demo-outbox.js",
+    "demo:pdb": "node demo/demo-pdb.mjs",
     "demo:publish": "bash scripts/with-secrets.sh dev node build/workers/fulfillment/demo/demo-publish.js",
     "demo:queue": "bash scripts/with-secrets.sh dev node build/workers/webhook/demo/demo-queue.js",
     "demo:race": "bash scripts/with-secrets.sh dev node build/transactions/demo-race.js",

@@ -2761,13 +2761,55 @@ transition (new pod coming up / old pod going down); removing any one of
 them reopens the gap the broken profile demonstrates above.
 
 **The sequence this produces, with `replicas: 2`:** pod count goes _up_
-first, never down. A new pod is created (surge, now 3) while both old
-pods keep serving untouched; only once that new pod passes `/readyz`
-does Kubernetes touch an old one — it `SIGTERM`s it and starts the
-second new pod in parallel, so the count can briefly touch 4 while the
-old pod drains. The number of pods actually able to serve traffic never
-drops below 2 — only the total pod count briefly bulges above it.
-Verified live with `kubectl get pods -w` during a real rollout.
+first, never down. A new pod is created (surge, now 3 — the nominal cap,
+`replicas + maxSurge`) while both old pods keep serving untouched; only
+once that new pod passes `/readyz` does Kubernetes touch an old one —
+it `SIGTERM`s it. The moment that delete is issued, the controller's own
+scheduling math stops counting that pod against the surge budget, so it
+immediately starts the second new pod too — even though the dying pod's
+object is still sitting there as `Terminating` for several real seconds
+(`DRAIN_MS` + grace), not yet gone from `kubectl get pods`. That's how
+the _visible_ count can briefly reach 4 even though the controller's own
+budget never exceeds 3: the cap bounds what the controller counts as
+active, not how many pod objects can physically coexist while one is
+still draining. The number of pods actually able to serve traffic never
+drops below 2 either way. Verified live with `kubectl get pods -w`
+during a real rollout.
+
+### PodDisruptionBudget (`npm run demo:pdb`)
+
+`maxUnavailable` above only governs disruptions the Deployment
+controller itself drives (a rollout). It says nothing about a
+disruption started from _outside_ — `kubectl drain` draining a node, a
+cluster-autoscaler scaling one down, anyone manually evicting a pod. A
+`PodDisruptionBudget` (`infra/components/web-service.ts`, `minAvailable:
+1` with `replicas: 2`) guards exactly that case — but only through one
+specific mechanism: the **Eviction API**
+(`POST /api/v1/namespaces/{ns}/pods/{pod}/eviction`). A plain `kubectl
+delete pod` — what every drain test elsewhere in this README used —
+bypasses the PDB entirely; it isn't an eviction.
+
+`demo/demo-pdb.mjs` proves this with the real API, not a substitute:
+`kubectl proxy` to reach the API server, then a direct `POST` of a
+`policy/v1 Eviction` object for each of the two pods. `minAvailable: 1`
+means evicting _one_ pod is allowed (1 remains), but evicting the
+_second_ while the first hasn't been replaced yet should be rejected (0
+would remain). No restore step needed afterward — evicting one pod is a
+normal, self-healing disruption the Deployment controller replaces on
+its own.
+
+Measured locally (one run — see the script's own output for the
+authoritative statuses on any given run):
+
+- pod A eviction: **`201`** — allowed, 1 pod remains, satisfies
+  `minAvailable: 1`.
+- pod B eviction (immediately after, while A is still draining):
+  **`429 Too Many Requests`**, with the PDB's own message in the body:
+  `"The disruption budget nodejspro-ecom-api needs 1 healthy pods and
+has 1 currently"`.
+
+The cluster self-healed back to 2 `Running`/`Ready` pods on its own
+within a few seconds — no teardown or restore step needed.
 
 ## Grading
 
