@@ -11,16 +11,13 @@
 // toggle this script sets, so no pulumi/JWT secrets needed here.
 import { spawnSync } from 'node:child_process';
 
+import { ensureDefaultState, NAMESPACE, sleep } from './utils.mjs';
+
 const SERVICE_URL = 'http://localhost:8080/healthz';
-const NAMESPACE = 'nodejspro-ecom';
 const WORKERS = 60;
 const LOAD_DURATION_MS = 90_000;
 const POLL_INTERVAL_MS = 5_000;
 const COOLDOWN_MS = 90_000; // comfortably longer than the 30s stabilization window
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
 
 function snapshot(label) {
   const hpa = spawnSync(
@@ -58,9 +55,12 @@ async function worker(stopAt) {
   }
 }
 
+await ensureDefaultState();
+
 console.log(
   `starting ${WORKERS} concurrent workers against ${SERVICE_URL} for ${LOAD_DURATION_MS}ms`,
 );
+
 snapshot('before load');
 
 const stopAt = Date.now() + LOAD_DURATION_MS;

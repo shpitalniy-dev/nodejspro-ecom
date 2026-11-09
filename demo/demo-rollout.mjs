@@ -24,26 +24,24 @@
 // first — HARDENED=false npm run up — then run this again.
 import { spawn, spawnSync } from 'node:child_process';
 
-const NAMESPACE = 'nodejspro-ecom';
-const DEPLOYMENT = 'nodejspro-ecom-api';
-const HPA = 'nodejspro-ecom-api';
+import {
+  deleteHpa,
+  DEPLOYMENT,
+  ensureDefaultState,
+  getHpaManifest,
+  kubectlJson,
+  LOAD_POD,
+  NAMESPACE,
+  restoreHpa,
+  waitForDeploymentSettled,
+} from './utils.mjs';
+
 const SERVICE_URL = `http://${DEPLOYMENT}.${NAMESPACE}.svc.cluster.local/healthz`;
-const LOAD_POD = 'demo-rollout-load';
 const LOAD_IMAGE = 'curlimages/curl:latest';
 const LOAD_WORKERS = 30;
 // Comfortably longer than any rollout this Deployment has measured
 // (~15-30s with 2 replicas and the committed ~4s WARMUP_MS).
 const LOAD_DURATION_S = 45;
-
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function kubectlJson(args) {
-  const out = spawnSync('kubectl', args, { encoding: 'utf8' }).stdout;
-
-  return JSON.parse(out);
-}
 
 function currentProfile() {
   const deploy = kubectlJson([
@@ -57,31 +55,6 @@ function currentProfile() {
   ]);
 
   return deploy.spec.template.spec.containers[0].readinessProbe ? 1 : 0;
-}
-
-function getHpaManifest() {
-  const hpa = kubectlJson(['-n', NAMESPACE, 'get', 'hpa', HPA, '-o', 'json']);
-
-  // Trimmed to exactly what a fresh `kubectl apply -f -` needs — not
-  // `status`, `metadata.resourceVersion`/`uid`/`creationTimestamp`,
-  // which belong to the object we're about to delete, not the one
-  // we're about to create.
-  return {
-    apiVersion: hpa.apiVersion,
-    kind: hpa.kind,
-    metadata: { name: hpa.metadata.name, namespace: hpa.metadata.namespace },
-    spec: hpa.spec,
-  };
-}
-
-function deleteHpa() {
-  spawnSync('kubectl', ['-n', NAMESPACE, 'delete', 'hpa', HPA, '--wait=true']);
-}
-
-function restoreHpa(manifest) {
-  spawnSync('kubectl', ['apply', '-f', '-'], {
-    input: JSON.stringify(manifest),
-  });
 }
 
 // This measurement is about the rollout alone — an HPA reacting to the
@@ -104,40 +77,8 @@ function restoreHpa(manifest) {
 // dip of its own. Throws, naming the last status seen, rather than
 // silently continuing if it never actually settles — proceeding
 // against an unstable Deployment would measure something other than
-// the rollout.
-async function waitForDeploymentSettled() {
-  let stableChecks = 0;
-  let lastStatus;
-
-  for (let i = 0; i < 90 && stableChecks < 2; i++) {
-    const deploy = kubectlJson([
-      '-n',
-      NAMESPACE,
-      'get',
-      'deploy',
-      DEPLOYMENT,
-      '-o',
-      'json',
-    ]);
-    lastStatus = deploy.status;
-    const settled =
-      lastStatus.replicas === lastStatus.readyReplicas &&
-      lastStatus.replicas === lastStatus.availableReplicas &&
-      lastStatus.replicas === lastStatus.updatedReplicas;
-
-    stableChecks = settled ? stableChecks + 1 : 0;
-
-    if (stableChecks < 2) {
-      await sleep(1000);
-    }
-  }
-
-  if (stableChecks < 2) {
-    throw new Error(
-      `Deployment never settled (last status: ${JSON.stringify(lastStatus)})`,
-    );
-  }
-}
+// the rollout. (Implementation lives in ./utils.mjs, shared with
+// demo-pdb.mjs.)
 
 // Non-blocking — the load generator below must keep running while this
 // is in flight.
@@ -250,6 +191,8 @@ function readLoadResults() {
     { encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 },
   ).stdout;
 }
+
+await ensureDefaultState();
 
 const profile = currentProfile();
 const replicas = kubectlJson([

@@ -7,12 +7,22 @@
 //
 // Output contract (grader-parsed, one `key=number` per line):
 //   healthy, minAvailable, evict-1, evict-2
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 
-const NAMESPACE = 'nodejspro-ecom';
-const DEPLOYMENT = 'nodejspro-ecom-api';
-const PDB_NAME = 'nodejspro-ecom-api';
-const HPA = 'nodejspro-ecom-api';
+import {
+  deleteHpa,
+  ensureDefaultState,
+  getHpaManifest,
+  kubectlJson,
+  NAMESPACE,
+  PDB_NAME,
+  restoreHpa,
+  run,
+  scaleTo,
+  waitForDeploymentSettled,
+  waitForPdbSynced,
+} from './utils.mjs';
+
 // This demo only makes sense at exactly 2 replicas: minAvailable:1
 // means evicting one pod consumes the *entire* budget only when
 // replicas - minAvailable === 1. At 3+ replicas (e.g. the HPA mid
@@ -24,89 +34,6 @@ const PROXY_URL = `http://127.0.0.1:${PROXY_PORT}`;
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-function run(cmd, args) {
-  const r = spawnSync(cmd, args, { encoding: 'utf8' });
-
-  return { code: r.status ?? -1, out: (r.stdout ?? '').trim() };
-}
-
-function kubectlJson(args) {
-  return JSON.parse(run('kubectl', args).out);
-}
-
-function getHpaManifest() {
-  const hpa = kubectlJson(['-n', NAMESPACE, 'get', 'hpa', HPA, '-o', 'json']);
-
-  return {
-    apiVersion: hpa.apiVersion,
-    kind: hpa.kind,
-    metadata: { name: hpa.metadata.name, namespace: hpa.metadata.namespace },
-    spec: hpa.spec,
-  };
-}
-
-function deleteHpa() {
-  run('kubectl', ['-n', NAMESPACE, 'delete', 'hpa', HPA, '--wait=true']);
-}
-
-function restoreHpa(manifest) {
-  spawnSync('kubectl', ['apply', '-f', '-'], {
-    input: JSON.stringify(manifest),
-  });
-}
-
-function scaleTo(replicas) {
-  run('kubectl', [
-    '-n',
-    NAMESPACE,
-    'scale',
-    'deploy',
-    DEPLOYMENT,
-    `--replicas=${replicas}`,
-  ]);
-}
-
-// Unlike demo-rollout.mjs's waitForDeploymentSettled, this test needs
-// *exactly* `replicas` (minAvailable:1 only blocks the second eviction
-// when replicas - minAvailable === 1), not just internal self-
-// consistency. Throws, naming the last status seen, rather than
-// silently continuing if it never actually settles there — evicting
-// against the wrong replica count would prove nothing.
-async function waitForReplicas(replicas) {
-  let stableChecks = 0;
-  let lastStatus;
-
-  for (let i = 0; i < 90 && stableChecks < 2; i++) {
-    const deploy = kubectlJson([
-      '-n',
-      NAMESPACE,
-      'get',
-      'deploy',
-      DEPLOYMENT,
-      '-o',
-      'json',
-    ]);
-    lastStatus = deploy.status;
-    const settled =
-      lastStatus.replicas === replicas &&
-      lastStatus.readyReplicas === replicas &&
-      lastStatus.availableReplicas === replicas &&
-      lastStatus.updatedReplicas === replicas;
-
-    stableChecks = settled ? stableChecks + 1 : 0;
-
-    if (stableChecks < 2) {
-      await sleep(1000);
-    }
-  }
-
-  if (stableChecks < 2) {
-    throw new Error(
-      `Deployment never settled at ${replicas} replicas (last status: ${JSON.stringify(lastStatus)})`,
-    );
-  }
 }
 
 function getPodNames() {
@@ -185,6 +112,8 @@ async function evict(podName) {
   return res.status;
 }
 
+await ensureDefaultState();
+
 console.log(`pausing HPA, scaling to ${BASELINE_REPLICAS} replicas`);
 
 // Manifest captured and the exit-safety-net registered *before*
@@ -206,7 +135,19 @@ process.on('exit', restoreHpaOnce);
 
 deleteHpa();
 scaleTo(BASELINE_REPLICAS);
-await waitForReplicas(BASELINE_REPLICAS);
+await waitForDeploymentSettled({ replicas: BASELINE_REPLICAS });
+
+const pdbMinAvailable = kubectlJson([
+  '-n',
+  NAMESPACE,
+  'get',
+  'pdb',
+  PDB_NAME,
+  '-o',
+  'json',
+]).spec.minAvailable;
+
+await waitForPdbSynced(BASELINE_REPLICAS, pdbMinAvailable);
 
 try {
   const [podA, podB] = getPodNames();

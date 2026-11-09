@@ -2469,6 +2469,13 @@ Local-only: everything in this section runs on a single-node `kind`
 cluster, no cloud account or payment method needed. This section grows
 across HW #28's own stages — only cluster bootstrap exists so far.
 
+**Demos self-heal cluster drift.** `demo:rollout`, `demo:pdb` and
+`demo:hpa` share `demo/utils.mjs`, whose `ensureDefaultState()` runs
+first in each of them: it deletes any stray load pod left over from a
+previous run, then unconditionally re-runs `npm run up` and waits for
+the Deployment and PDB to converge, before the demo's own test logic
+starts.
+
 ### Production image (`npm run demo:image`)
 
 `docker/Dockerfile` branches a new `secret-demo` + `distroless` path off
@@ -2886,19 +2893,7 @@ authoritative numbers on any given run, which will vary with timing):
   every time).
 - **broken (`profile=0`)**: `requests=25245`, `ok=22270`, `failed=2975`
   (11.8%) — in line with the HW's own expectation that the broken
-  profile's failure rate "floats around roughly one in six," not a
-  fixed number. Getting a clean measurement took a real fix: an earlier
-  attempt used `HARDENED=false npm run up` as a one-off command prefix,
-  which only sets the variable for that one command, not the shell —
-  `demo-rollout.mjs`'s _own_ internal `npm run up` call (bumping `REV`)
-  inherits the parent shell's env, not that one-off prefix, so its
-  first rollout silently flipped the Deployment straight back to
-  `hardened:true` before any load-bearing measurement happened, and
-  what got measured was actually a broken-to-hardened _transition_, not
-  a clean broken-profile rollout. Fix: `export HARDENED=false` first
-  (persisted for the shell), confirm with `kubectl get deploy … -o
-json` that no `readinessProbe` is present, _then_ run the demo in
-  that same shell — restored with a plain `npm run up` afterward.
+  profile's failure rate ~ "floats around roughly one in six".
 
 **Why the hardened profile has no downtime.** Three mechanisms acting
 together, not one: (1) the **readinessProbe** (`/readyz`) is what adds a
@@ -3006,12 +3001,11 @@ demo flips on and off, `demo/demo-hpa.mjs` doesn't touch `infra/` or
 need any secrets — it only needs cluster access.
 
 Measured locally (`100m` CPU request, permanent `30s` window): idle
-settled at `7%–13%/50%` (vs. `33%–81%` at the old `20m`) — comfortably
-below target, finally distinguishable from real load. Under the
-60-worker load, utilization hit `779%` and the HPA scaled 2 → 4; after
-load stopped it dropped back to single digits and scaled cleanly back
-to 2, settling there — a complete round trip with no secrets exported
-and no lingering oscillation.
+settled at `7%–13%/50%` — comfortably below target, finally distinguishable
+from real load. Under the 60-worker load, utilization hit `779%` and
+the HPA scaled 2 → 4; after load stopped it dropped back to single digits
+and scaled cleanly back to 2, settling there — a complete round trip with
+no secrets exported and no lingering oscillation.
 
 ## Grading
 
