@@ -3,7 +3,7 @@ import type { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
 
 import { sleep } from '../../utils/sleep.ts';
-import { LoggerService } from '../logger.service.ts';
+import { LoggerService } from '../observability/logger.service.ts';
 
 export interface CacheAsideOptions {
   ttlSeconds: number | (() => number);

@@ -1,0 +1,59 @@
+# HW #29 — observability stack. Separate from the project's main
+# docker-compose.yml on purpose: this is infra for *watching* the app, not
+# infra the app depends on to run, and the three demo:* scripts boot the
+# app in-process (see demo.utils.ts's startDemoApp()), never through this
+# compose file's own network.
+#
+# otel-lgtm: one container (OTLP collector + Tempo + Grafana), the
+# fastest-starting option the HW's own prior art measured (see
+# ## Observability's "docker stats" note) — used here for OTLP ingestion
+# and Tempo's trace-query API (demo-trace.ts's TRACE_API_URL).
+#
+# prometheus: standalone, scraping the app's own /metrics directly — kept
+# off otel-lgtm's bundled Prometheus so RED metrics stay on a plain,
+# inspectable scrape config instead of routed through the collector too.
+#
+# Ports in 22900-22999 (this HW's assigned range, see README's ## Grading).
+#
+# Verified live (Stage 6): Tempo's query port inside otel-lgtm is 3200 as
+# assumed. otel-lgtm's image is RHEL-based and has curl but not wget —
+# unlike prom/prometheus below, which does have wget — so its healthcheck
+# uses curl specifically, not copy-pasted from the one below.
+services:
+  otel-lgtm:
+    image: grafana/otel-lgtm:0.11.11
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:22900:3000' # Grafana UI
+      - '127.0.0.1:22904:3200' # Tempo query API -> TRACE_API_URL
+      - '127.0.0.1:22917:4317' # OTLP gRPC
+      - '127.0.0.1:22918:4318' # OTLP HTTP -> OTEL_EXPORTER_OTLP_ENDPOINT
+    volumes:
+      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/nodejspro-ecom-prometheus.yaml:ro
+      - ./grafana-dashboards-provider.yml:/etc/grafana/provisioning/dashboards/nodejspro-ecom.yaml:ro
+      - ./dashboard.json:/etc/grafana/provisioning/dashboards/nodejspro-ecom/dashboard.json:ro
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'curl -sf -o /dev/null http://127.0.0.1:3000/api/health']
+      interval: 3s
+      retries: 30
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v3.0.1
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:22901:9090' # PROMETHEUS_URL
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    # host.docker.internal needs this explicit mapping on Linux — Docker
+    # Desktop (Mac/Windows) already resolves it without it, but this is a
+    # no-op there, not a conflict.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    healthcheck:
+      test:
+        ['CMD-SHELL', 'wget -q -O /dev/null http://127.0.0.1:9090/-/healthy']
+      interval: 2s
+      retries: 20
+      start_period: 5s

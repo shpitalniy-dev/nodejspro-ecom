@@ -16,9 +16,11 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import type { Logger } from 'pino';
 
 import { IdempotencyKeyInterceptor } from '../../interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from '../../interceptors/location-header.interceptor.ts';
+import { LoggerService } from '../../services/observability/logger.service.ts';
 import { AuthGuard } from '../auth/auth.guards.ts';
 import type { AccessTokenClaims } from '../auth/auth.types.ts';
 import { CurrentUser } from '../auth/current-user.decorator.ts';
@@ -31,10 +33,15 @@ import { writeSseEvent } from './orders.utils.ts';
 
 @Controller('orders')
 export class OrdersController {
+  private readonly log: Logger;
+
   constructor(
     private readonly ordersService: OrdersService,
     private readonly orderEvents: OrderEventsService,
-  ) {}
+    logger: LoggerService,
+  ) {
+    this.log = logger.child({ layer: 'orders.controller' });
+  }
 
   @Get()
   async list(
@@ -48,6 +55,8 @@ export class OrdersController {
   @HttpCode(201)
   @UseInterceptors(LocationHeaderInterceptor, IdempotencyKeyInterceptor)
   async create(@Body() body: CreateOrderDto) {
+    this.log.info({ itemCount: body.items.length }, 'create-order request');
+
     return this.ordersService.create(body.items);
   }
 
