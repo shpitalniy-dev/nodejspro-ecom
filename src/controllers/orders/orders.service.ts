@@ -4,6 +4,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
+import type { Logger } from 'pino';
 import type { EntityManager } from 'typeorm';
 import { In } from 'typeorm';
 
@@ -13,6 +14,7 @@ import { Outbox } from '../../entities/outbox.entity.ts';
 import { Product as ProductEntity } from '../../entities/product.entity.ts';
 import { User as UserEntity } from '../../entities/user.entity.ts';
 import { DataSourceService } from '../../services/data-source.service.ts';
+import { LoggerService } from '../../services/observability/logger.service.ts';
 import {
   checkout,
   InsufficientFundsError,
@@ -43,10 +45,15 @@ const STOREFRONT_CUSTOMER_BALANCE_CENTS = '100000000';
 
 @Injectable()
 export class OrdersService {
+  private readonly log: Logger;
+
   constructor(
     private readonly dataSourceService: DataSourceService,
     private readonly orderEvents: OrderEventsService,
-  ) {}
+    logger: LoggerService,
+  ) {
+    this.log = logger.child({ layer: 'orders.service' });
+  }
 
   async list(limit = 20, cursor?: string): Promise<OrderListResponse> {
     const manager = await this.dataSourceService.getManager();
@@ -206,6 +213,8 @@ export class OrdersService {
   }
 
   async create(items: CreateOrderItemDto[]): Promise<Order> {
+    this.log.info({ itemCount: items.length }, 'creating order');
+
     const manager = await this.dataSourceService.getManager();
 
     const productIds = items.map(item => item.productId);

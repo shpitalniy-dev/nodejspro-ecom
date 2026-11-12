@@ -14,7 +14,7 @@ import { Inventory } from '../../../entities/inventory.entity.ts';
 import { Product as ProductEntity } from '../../../entities/product.entity.ts';
 import { QueryCountLogger } from '../../../utils/query-count-logger.ts';
 import { requireEnv } from '../../../utils/require-env.ts';
-import { LoggerService } from '../../logger.service.ts';
+import { LoggerService } from '../../observability/logger.service.ts';
 import { CacheAsideService } from '../cache-aside.service.ts';
 
 // demo:cache — cache-aside with jittered TTL + single-flight stampede lock

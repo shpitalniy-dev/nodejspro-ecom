@@ -1,0 +1,11 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: nodejspro-ecom-api
+    static_configs:
+      # The app runs on the host (npm run start / the demo scripts), never
+      # inside this compose file — host.docker.internal is how a container
+      # reaches back out to it. Assumes the default PORT=3000
+      # (src/config/env.schema.ts) — update this if PORT is overridden.
+      - targets: ['host.docker.internal:3000']

@@ -36,7 +36,9 @@ import { ConcurrencyLimiter } from './services/concurrency-limiter.ts';
 import { DataSourceService } from './services/data-source.service.ts';
 import { DatabaseService } from './services/database.service.ts';
 import { IdempotencyStore } from './services/idempotency-store.service.ts';
-import { LoggerService } from './services/logger.service.ts';
+import { LoggerService } from './services/observability/logger.service.ts';
+import { MetricsController } from './services/observability/metrics.controller.ts';
+import { OtelShutdownService } from './services/observability/otel-shutdown.service.ts';
 import { RabbitMqService } from './services/rabbitmq/rabbitmq.service.ts';
 import { TokenBucketService } from './services/rate-limit/token-bucket.service.ts';
 import { ReadinessService } from './services/readiness.service.ts';
@@ -47,6 +49,7 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
 @Module({
   controllers: [
     HealthController,
+    MetricsController,
     ProductsController,
     OrdersController,
     AuthController,
@@ -67,6 +70,7 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
     DataSourceService,
     RabbitMqService,
     LoggerService,
+    OtelShutdownService,
     CacheRedisConnection,
     QueueRedisConnection,
     ProductsListRateLimitGuard,

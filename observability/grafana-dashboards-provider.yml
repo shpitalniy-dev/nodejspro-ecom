@@ -1,0 +1,10 @@
+# Tells Grafana to auto-load dashboard.json on startup (mounted alongside
+# it, see compose.yml) instead of it just being inert JSON sitting in git.
+apiVersion: 1
+
+providers:
+  - name: nodejspro-ecom
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards/nodejspro-ecom

@@ -3007,6 +3007,150 @@ the HPA scaled 2 → 4; after load stopped it dropped back to single digits
 and scaled cleanly back to 2, settling there — a complete round trip with
 no secrets exported and no lingering oscillation.
 
+## Observability | HW #29
+
+Local-only, same as `## Kubernetes` above: everything here runs on this
+machine, no cloud account needed. The question this section answers: "a
+request 500'd at 03:15 — how long until you can say what happened?" The
+answer has to be a minute, not an evening — one key (`trace_id`) opens all
+three doors (logs, metrics, traces).
+
+### Correlation (`npm run demo:logs`)
+
+The correlator is never passed as a function argument —
+`correlation.middleware.ts` opens one `AsyncLocalStorage` context per
+request (`src/services/observability/context.ts`), and
+`logger.service.ts`'s pino `mixin` reads `trace_id`/`span_id` straight off
+the active OpenTelemetry span on every line, never a locally-generated
+uuid (see `otel.ts`'s own comment on why this has to be true for the trace
+cross-check below to mean anything). Every layer a request passes through
+tags its own line with `layer` (`orders.controller` → `orders.service` →
+`orders.checkout`, plus `http` for the correlation middleware's own access
+log) via `logger.child({ layer })`.
+
+`redact` hides exactly these paths and nothing else — a path not listed
+isn't hidden: `req.headers.authorization`, `password`, `body.password`,
+`*.token`.
+
+`demo:logs` proves four separate things, each with its own numbers: no
+non-JSON stdout lines (`non-json-lines`); one request's three layers share
+a single trace (`layers`, `distinct-trace-ids`); eight concurrent requests
+each keep their own distinct trace under real concurrency (`burst`,
+`burst-trace-ids`, `burst-uneven`, `trace-id-matches-header`); and a
+request carrying a bearer token and a password gets logged without either
+value surviving (`secret-req-logged`, `secret-in-logs`).
+
+### RED metrics (`npm run demo:metrics`)
+
+`red-metrics.middleware.ts` records on `res.on('finish')`, not a Nest
+interceptor — an interceptor's success branch never runs for a thrown
+exception, and `res.statusCode` at `finish` is the one real, final answer
+regardless of what produced it (success, a validation 400, or an exception
+filter). `route` is always the matched Express template (`req.route.path`,
+e.g. `/orders`), never the raw path — a raw path would mint a new time
+series per resource id.
+
+Duration buckets (`src/services/observability/metrics.ts`): `0.01, 0.025,
+0.05, 0.1, 0.25, 0.5, 1, 2.5, 5` seconds — comfortably above anything this
+in-process app produces, so `above-top-bucket=0` is a computed result, not
+a special case.
+
+`demo:metrics` sends 100 requests, each carrying its own distinct
+`Idempotency-Key` (a real per-request identifier this app already has,
+HW #22) — proving a hundred different ids never mint a hundred new label
+combinations (`series-before == series-after`), while `counter-delta`/
+`errors-delta` come from diffing two real reads of the shared `registry`
+bracketing that traffic (prom-client's own `getMetricsAsJSON()` — the same
+object `/metrics` itself serves — not a hand-parsed scrape of the
+exposition text), never printed from a separately-tracked in-memory count.
+`getMetricsAsJSON()` hands back live references into prom-client's own
+internal state, not a frozen snapshot — summing a sample array has to
+happen immediately at each read, not after the 100 requests run, or
+`counter-delta`/`errors-delta` silently read 0 (confirmed live: this is
+exactly what the first version of this rewrite did).
+
+### Tracing (`npm run demo:trace`)
+
+OpenTelemetry (`src/services/observability/otel.ts`) is loaded via Node's
+`--import` flag, not a first-line import — this repo's own
+`eslint-plugin-simple-import-sort` reorders imports on every `--fix`,
+which would silently reorder an "import it first" convention and break
+instrumentation with no error. `@opentelemetry/instrumentation-pino` is
+disabled explicitly: it would inject `trace_id`/`span_id` into every pino
+line a second time, through a different mechanism than the one explicit
+`mixin` already does.
+
+`demo:trace` is the main proof: it starts a real span with
+`tracer.startActiveSpan()` — the demo acting as the trace's own
+originator, same as any real client calling this API — and lets OTel's
+own http/undici auto-instrumentation propagate it onto the outgoing
+`fetch()` automatically, no hand-built `traceparent` header. Checked two
+ways: the log line's `trace_id` and the span queried back from the trace
+backend both match the id the demo's own span started with
+(`trace-matches-log`, `trace-matches-header`). A Postgres query inside the
+same request gets its own nested span automatically
+(`@opentelemetry/instrumentation-pg`, part of
+`getNodeAutoInstrumentations()`), satisfying `spans >= 2` with zero manual
+span code. Since the demo is the trace's real originator (not standing in
+for an upstream caller whose own span was never exported), every span's
+parent resolves inside the trace Tempo hands back — `orphan-spans=0` is a
+genuine integrity check, not a special-cased "expect exactly one dangling
+parent". `span-status-error` reuses `checkout.ts`'s existing
+`DEMO_FAIL_AFTER_OUTBOX` hook (the same one `demo:crash-write` already
+exercises) to force a genuine 500, not a validation 400 — verified
+live that a plain 400 also marks its span `ERROR` here, so a forced 5xx is
+what actually makes this check prove something a 400 wouldn't already
+give it for free.
+
+### Observability stack (`observability/`)
+
+`observability/compose.yml` — `grafana/otel-lgtm` (one container: OTLP
+collector + Tempo + Grafana, the fastest-starting option available) for
+traces, plus a standalone `prometheus` scraping this app's own `/metrics`
+directly via `observability/prometheus.yml` (not otel-lgtm's bundled one —
+RED metrics stay on a plain, inspectable scrape config rather than routed
+through the collector too). `observability/grafana-datasources.yml`
+provisions that Prometheus into Grafana by config, not a manual click;
+`observability/grafana-dashboards-provider.yml` does the same for the
+dashboard itself.
+
+| Env var                       | Source                                                     | Used by                                                                             |
+| ----------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------------------------------- |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `observability/compose.yml`'s `otel-lgtm` OTLP HTTP port   | `otel.ts`'s `NodeSDK` reads it itself — no application code reads this var directly |
+| `PROMETHEUS_URL`              | `observability/compose.yml`'s `prometheus` port            | Grafana's provisioned datasource; a human checking the dashboard                    |
+| `TRACE_API_URL`               | `observability/compose.yml`'s `otel-lgtm` Tempo query port | `demo-trace.ts`, to fetch a trace back by id                                        |
+
+`observability/dashboard.json` — 3 panels, one per RED question:
+
+| Panel    | PromQL                                                                                          | Question                        |
+| -------- | ----------------------------------------------------------------------------------------------- | ------------------------------- |
+| Rate     | `sum by (route) (rate(http_requests_total[1m]))`                                                | how many requests/sec, by route |
+| Errors   | `sum by (route) (rate(http_requests_total{status=~"5.."}[1m]))`                                 | how many of those are failing   |
+| Duration | `histogram_quantile(0.95, sum by (le, route) (rate(http_request_duration_seconds_bucket[1m])))` | how slow are the slow ones      |
+
+`observability/prometheus.yml`'s target (`host.docker.internal:3000`) is
+the app run via `npm run start`/`start:vault` — the three `demo:*`
+scripts deliberately bind an ephemeral port instead (`demo.utils.ts`'s
+`startDemoApp()`, so a demo run never collides with a real running
+server), so the dashboard only shows live traffic while the app is
+running that way, not while a `demo:*` script is running. `demo:metrics`
+reads its own in-process `registry` directly for its own checks (see
+`### RED metrics` above), independent of this Prometheus/Grafana stack —
+the stack is for a human watching the app, not part of any grading check
+(criterion 7 is a static parse of `dashboard.json`, unaffected by this).
+
+### Measured runs
+
+One real run per demo against the stack above (`docker compose -f
+observability/compose.yml up -d --wait`, then the three `demo:*`
+scripts) — identical across 3 consecutive runs each.
+
+| Demo           | Output                                                                                                                                                   | Exit |
+| -------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | ---- |
+| `demo:logs`    | `non-json-lines=0 layers=4 distinct-trace-ids=1 burst=8 burst-trace-ids=8 burst-uneven=0 trace-id-matches-header=1 secret-req-logged=1 secret-in-logs=0` | 0    |
+| `demo:metrics` | `sent-ok=50 sent-fail=50 counter-delta=100 errors-delta=50 above-top-bucket=0 series-before=2 series-after=2`                                            | 0    |
+| `demo:trace`   | `spans=50 orphan-spans=0 trace-matches-header=1 trace-matches-log=1 span-status-error=1`                                                                 | 0    |
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -3202,3 +3346,32 @@ npm run demo:hpa
 ```
 
 Teardown: `npm run destroy && npm run cluster:down`.
+
+### HW #29 commands
+
+Separate observability stack from the main `docker compose` flow above —
+own compose file, own port range (see `## Observability`). The three
+`demo:*` scripts boot the app in-process (same as every other `demo:*`
+script, see `demo.utils.ts`'s `startDemoApp()`), so they need the full
+`### Setup` exports above (`DB_URL`, the JWT keys, storage credentials —
+the app validates all of them at boot, in-process or not) — only these
+three are new:
+
+```bash
+docker compose -f observability/compose.yml up -d --wait
+
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:22918
+export PROMETHEUS_URL=http://127.0.0.1:22901
+export TRACE_API_URL=http://127.0.0.1:22904
+
+npm ci
+npx tsc --noEmit
+npm run build
+npm run migrate
+npm run seed
+npm run demo:logs
+npm run demo:metrics
+npm run demo:trace
+```
+
+Teardown: `docker compose -f observability/compose.yml down`.

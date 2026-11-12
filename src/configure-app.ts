@@ -7,6 +7,8 @@ import helmet from 'helmet';
 import path from 'node:path';
 
 import { ProblemExceptionFilter } from './filters/problem-exception.filter.ts';
+import { correlationMiddleware } from './middleware/correlation.middleware.ts';
+import { redMetricsMiddleware } from './middleware/red-metrics.middleware.ts';
 import { validationErrorHandler } from './middleware/validation-error-handler.ts';
 import { stripDangerousKeys } from './utils/object.ts';
 
@@ -15,8 +17,15 @@ import { stripDangerousKeys } from './utils/object.ts';
 // exercises the exact same body parser / OpenAPI validation / error
 // handling prod does, not a stripped-down stand-in.
 export function configureApp(app: NestExpressApplication): void {
+  // First of all — duration should cover the whole request, not just the
+  // part after helmet/body-parsing.
+  app.use(redMetricsMiddleware);
   app.use(helmet());
   app.use(express.json({ reviver: stripDangerousKeys }));
+  // After body parsing (correlation's own access log reads req.body) and
+  // before everything else — every guard/controller/service/checkout call
+  // below this point runs inside the ALS context it opens.
+  app.use(correlationMiddleware);
 
   // Unsigned — the refresh cookie's own value is opaque and HMAC-hashed
   // server-side before it's ever compared to anything, so a signed-cookie
@@ -37,8 +46,10 @@ export function configureApp(app: NestExpressApplication): void {
       // left unvalidated by omission.
       // /assets/:key (HW#26 demo:cdn): raw bytes with a per-asset
       // content-type, not a JSON resource this spec's schemas describe.
+      // /metrics (HW#29): Prometheus's own text exposition format, not
+      // JSON either.
       ignorePaths:
-        /^\/health(z|\/db)?$|^\/readyz$|^\/orders\/\d+\/events$|^\/assets\//,
+        /^\/health(z|\/db)?$|^\/readyz$|^\/orders\/\d+\/events$|^\/assets\/|^\/metrics$/,
     }),
   );
 
