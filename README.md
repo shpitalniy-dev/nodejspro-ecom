@@ -3367,6 +3367,8 @@ export TRACE_API_URL=http://127.0.0.1:22904
 npm ci
 npx tsc --noEmit
 npm run build
+npm run migrate
+npm run seed
 npm run demo:logs
 npm run demo:metrics
 npm run demo:trace
