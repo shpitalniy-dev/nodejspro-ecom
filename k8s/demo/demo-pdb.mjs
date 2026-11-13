@@ -112,61 +112,68 @@ async function evict(podName) {
   return res.status;
 }
 
-await ensureDefaultState();
+async function main() {
+  await ensureDefaultState();
 
-console.log(`pausing HPA, scaling to ${BASELINE_REPLICAS} replicas`);
+  console.log(`pausing HPA, scaling to ${BASELINE_REPLICAS} replicas`);
 
-// Manifest captured and the exit-safety-net registered *before*
-// anything is deleted — same reasoning as demo-rollout.mjs: if the
-// settle-check below throws and the net were only registered after a
-// successful pause, the HPA would already be deleted with nothing left
-// to restore it. Belt-and-suspenders beyond that: a crash the normal
-// try/finally never reaches still needs this — already happened once.
-const hpaManifest = getHpaManifest();
-let hpaRestored = false;
+  // Manifest captured and the exit-safety-net registered *before*
+  // anything is deleted — same reasoning as demo-rollout.mjs: if the
+  // settle-check below throws and the net were only registered after a
+  // successful pause, the HPA would already be deleted with nothing left
+  // to restore it. Belt-and-suspenders beyond that: a crash the normal
+  // try/finally never reaches still needs this — already happened once.
+  const hpaManifest = getHpaManifest();
+  let hpaRestored = false;
 
-function restoreHpaOnce() {
-  if (hpaRestored) return;
-  hpaRestored = true;
-  restoreHpa(hpaManifest);
-}
+  function restoreHpaOnce() {
+    if (hpaRestored) return;
+    hpaRestored = true;
+    restoreHpa(hpaManifest);
+  }
 
-process.on('exit', restoreHpaOnce);
+  process.on('exit', restoreHpaOnce);
 
-deleteHpa();
-scaleTo(BASELINE_REPLICAS);
-await waitForDeploymentSettled({ replicas: BASELINE_REPLICAS });
+  deleteHpa();
+  scaleTo(BASELINE_REPLICAS);
+  await waitForDeploymentSettled({ replicas: BASELINE_REPLICAS });
 
-const pdbMinAvailable = kubectlJson([
-  '-n',
-  NAMESPACE,
-  'get',
-  'pdb',
-  PDB_NAME,
-  '-o',
-  'json',
-]).spec.minAvailable;
+  const pdbMinAvailable = kubectlJson([
+    '-n',
+    NAMESPACE,
+    'get',
+    'pdb',
+    PDB_NAME,
+    '-o',
+    'json',
+  ]).spec.minAvailable;
 
-await waitForPdbSynced(BASELINE_REPLICAS, pdbMinAvailable);
-
-try {
-  const [podA, podB] = getPodNames();
-  const { healthy, minAvailable } = getPdbStatus();
-  const proxy = spawn('kubectl', ['proxy', '--port', String(PROXY_PORT)]);
+  await waitForPdbSynced(BASELINE_REPLICAS, pdbMinAvailable);
 
   try {
-    await waitForProxy();
+    const [podA, podB] = getPodNames();
+    const { healthy, minAvailable } = getPdbStatus();
+    const proxy = spawn('kubectl', ['proxy', '--port', String(PROXY_PORT)]);
 
-    const evict1 = await evict(podA);
-    const evict2 = await evict(podB);
+    try {
+      await waitForProxy();
 
-    console.log(`healthy=${healthy}`);
-    console.log(`minAvailable=${minAvailable}`);
-    console.log(`evict-1=${evict1}`);
-    console.log(`evict-2=${evict2}`);
+      const evict1 = await evict(podA);
+      const evict2 = await evict(podB);
+
+      console.log(`healthy=${healthy}`);
+      console.log(`minAvailable=${minAvailable}`);
+      console.log(`evict-1=${evict1}`);
+      console.log(`evict-2=${evict2}`);
+    } finally {
+      proxy.kill();
+    }
   } finally {
-    proxy.kill();
+    restoreHpaOnce();
   }
-} finally {
-  restoreHpaOnce();
 }
+
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
+});

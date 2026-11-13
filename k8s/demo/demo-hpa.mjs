@@ -55,30 +55,37 @@ async function worker(stopAt) {
   }
 }
 
-await ensureDefaultState();
+async function main() {
+  await ensureDefaultState();
 
-console.log(
-  `starting ${WORKERS} concurrent workers against ${SERVICE_URL} for ${LOAD_DURATION_MS}ms`,
-);
+  console.log(
+    `starting ${WORKERS} concurrent workers against ${SERVICE_URL} for ${LOAD_DURATION_MS}ms`,
+  );
 
-snapshot('before load');
+  snapshot('before load');
 
-const stopAt = Date.now() + LOAD_DURATION_MS;
-const workers = Array.from({ length: WORKERS }, () => worker(stopAt));
+  const stopAt = Date.now() + LOAD_DURATION_MS;
+  const workers = Array.from({ length: WORKERS }, () => worker(stopAt));
 
-const pollUntilLoadEnds = (async () => {
-  while (Date.now() < stopAt) {
+  const pollUntilLoadEnds = (async () => {
+    while (Date.now() < stopAt) {
+      await sleep(POLL_INTERVAL_MS);
+      snapshot('during load');
+    }
+  })();
+
+  await Promise.all([...workers, pollUntilLoadEnds]);
+
+  console.log('\nload stopped — watching for scale-down');
+  const cooldownEnd = Date.now() + COOLDOWN_MS;
+
+  while (Date.now() < cooldownEnd) {
     await sleep(POLL_INTERVAL_MS);
-    snapshot('during load');
+    snapshot('cooldown');
   }
-})();
-
-await Promise.all([...workers, pollUntilLoadEnds]);
-
-console.log('\nload stopped — watching for scale-down');
-const cooldownEnd = Date.now() + COOLDOWN_MS;
-
-while (Date.now() < cooldownEnd) {
-  await sleep(POLL_INTERVAL_MS);
-  snapshot('cooldown');
 }
+
+main().catch(error => {
+  console.error(error);
+  process.exit(1);
+});
