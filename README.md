@@ -1863,7 +1863,7 @@ npm run demo:queue
   token's own header.
 - **Argon2id via `@node-rs/argon2`**, not `argon2` (ranisalt) — the latter
   needs an install script to fetch its native binary, which this repo's
-  `Dockerfile` (`npm ci --ignore-scripts`) would break. Params
+  `docker/Dockerfile` (`npm ci --ignore-scripts`) would break. Params
   (`memoryCost: 19456, timeCost: 2, parallelism: 1`, an OWASP tuple) are
   explicit, not left at the library default.
 - **Concurrent-hash memory is bounded two ways**: `LoginRateLimitGuard`
@@ -2110,7 +2110,7 @@ intent/commit), `demo:multipart` (resumable multipart), and `demo:cdn`
   same shape as `db-password-seed`) assigns the cluster layout, creates
   the bucket, imports the key, grants it, and sets a bucket lifecycle
   rule — all idempotently, on every `docker compose up -d --wait`, zero
-  manual steps. It builds from this project's own `Dockerfile`'s `deps`
+  manual steps. It builds from this project's own `docker/Dockerfile`'s `deps`
   stage (cache-shared with `api`'s own build, not a second image) and
   bind-mounts only the script itself — never `node_modules` — since a
   grader's `npm ci` runs _after_ `docker compose up -d --wait`, not
@@ -2372,16 +2372,16 @@ demos fully.
 
 ### Environment variables
 
-| Variable                 | Джерело                               | Навіщо                                                                                                                     |
-| ------------------------ | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `STORAGE_ENDPOINT`       | compose (in-network) / сховище (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
-| `STORAGE_REGION`         | default (`us-east-1`)                 | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
-| `STORAGE_ACCESS_KEY`     | сховище (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
-| `STORAGE_SECRET_KEY`     | сховище (#11)                         | Garage secret key — same pair as above                                                                                     |
-| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)                | the private bucket presigned PUTs target                                                                                   |
-| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)                 | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
-| `GARAGE_RPC_SECRET`      | сховище (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
-| `GARAGE_ADMIN_TOKEN`     | сховище (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
+| Variable                 | Джерело                             | Навіщо                                                                                                                     |
+| ------------------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `STORAGE_ENDPOINT`       | compose (in-network) / vault (host) | S3 API address — `http://garage:3900` in-container, `http://127.0.0.1:6600` host-side                                      |
+| `STORAGE_REGION`         | default (`us-east-1`)               | SigV4 region, matches `garage.toml`'s `s3_region`                                                                          |
+| `STORAGE_ACCESS_KEY`     | vault (#11)                         | Garage access key — chosen by us, imported, not minted                                                                     |
+| `STORAGE_SECRET_KEY`     | vault (#11)                         | Garage secret key — same pair as above                                                                                     |
+| `STORAGE_BUCKET_UPLOADS` | `hw26-uploads` (fixed)              | the private bucket presigned PUTs target                                                                                   |
+| `STORAGE_BUCKET_ASSETS`  | `hw26-assets` (fixed)               | the private bucket `demo:cdn`'s edge cache reads through — separate from uploads, see Object storage's own "Key decisions" |
+| `GARAGE_RPC_SECRET`      | vault (#11)                         | Garage's own inter-node RPC secret — read by the `garage` binary, never by this app                                        |
+| `GARAGE_ADMIN_TOKEN`     | vault (#11)                         | authenticates `garage-init`'s admin-API calls — same, Garage-only                                                          |
 
 `GARAGE_RPC_SECRET`/`GARAGE_ADMIN_TOKEN` aren't in `src/config/env.schema.ts`
 on purpose — the NestJS app never reads them, only the `garage` container
@@ -2462,6 +2462,550 @@ get there.
 See `## Object storage | HW #26` → `### Measured runs` — all three demos'
 contract lines, confirmed identical across two consecutive runs and a
 third run from a genuinely fresh `docker compose down -v` volume.
+
+## Kubernetes | HW #28
+
+Local-only: everything in this section runs on a single-node `kind`
+cluster, no cloud account or payment method needed. This section grows
+across HW #28's own stages — only cluster bootstrap exists so far.
+
+**Demos self-heal cluster drift.** `demo:rollout`, `demo:pdb` and
+`demo:hpa` share `k8s/demo/utils.mjs`, whose `ensureDefaultState()` runs
+first in each of them: it deletes any stray load pod left over from a
+previous run, then unconditionally re-runs `npm run up` and waits for
+the Deployment and PDB to converge, before the demo's own test logic
+starts.
+
+### Production image (`npm run demo:image`)
+
+`docker/Dockerfile` branches a new `secret-demo` + `distroless` path off
+the existing `base`/`deps`/`builder`/`runner` stages (6 `FROM` lines
+total) — `docker-compose.yml`'s `api`/`garage-init` services still build
+exactly as before; `--target distroless` selects the new path for the
+k8s image only.
+
+**Why distroless, specifically.** Not image size — the HW's own
+benchmark puts distroless only ~3.5% smaller than `alpine`. The real
+win is what's _missing_: no `sh`, no shell at all, in the final image.
+After an RCE, an attacker with no shell has meaningfully less to work
+with than one who can just `sh -c` their next step.
+
+**`USER 65532`, not `USER nonroot`.** The base image's own `:nonroot`
+tag sets a numeric UID under the hood, but writing the _name_ in the
+Dockerfile means Kubernetes' `runAsNonRoot: true` check fails later
+with `CreateContainerConfigError` — the kubelet verifies the UID is
+non-zero, and it can't resolve a username to check it. Numeric avoids
+this entirely; see `infra/components/web-service.ts`'s container
+`securityContext` for where this actually gets enforced at the pod
+level too.
+
+**Build-time secret, via BuildKit's `--mount=type=secret` only.** No
+real private npm registry in this project, so `secret-demo` only proves
+the mechanism: a demo token (`.npm_token`, gitignored) is read inside
+that stage and must never land in the final image. `ARG`/`ENV` would
+leak it into the image's own metadata (`docker history`); `COPY` +
+`rm` in a later layer would leak it into that _earlier_ layer's actual
+bytes (a later `rm` only adds a whiteout — the file is invisible in the
+final filesystem, but still sitting in the layer blob underneath). A
+`--mount=type=secret` is only ever available inside that one `RUN`,
+never written to any layer at all.
+
+**`npm run demo:image`'s contract** (`docker/demo/demo-image.mjs`) — six
+numbers, each computed from a live `docker` command against the
+_actual built image_, never printed from a guess:
+
+| Key                | Measured via                                                                                        | What it proves                                                  |
+| ------------------ | --------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| `stages`           | `docker/Dockerfile` itself, counting `FROM` lines                                                   | multi-stage, not a single flat build                            |
+| `shell-inside`     | `docker run --entrypoint sh <image> -c true` — `0` if that fails to launch                          | no shell exists to drop into after an RCE                       |
+| `runtime-uid`      | `docker image inspect --format '{{.Config.User}}'`                                                  | non-root, and numeric (see above)                               |
+| `token-in-history` | `docker history --no-trunc`                                                                         | the secret isn't sitting in the image's own build metadata      |
+| `token-in-config`  | files found inside the extracted `docker save` tarball that aren't themselves another layer tarball | the secret isn't sitting in any layer's config JSON             |
+| `token-in-layers`  | files found inside the extracted `docker save` tarball that _are_ another layer tarball             | the secret isn't sitting in any layer's actual filesystem bytes |
+
+Three separate channels for the token checks because no single tool
+sees both leak paths: `ARG`/`ENV` shows up in `docker history` but
+leaves the layers themselves clean; `COPY` + `rm` in a later layer does
+the opposite — clean history, but the bytes are still in an earlier
+layer, only visible by actually unpacking `docker save`'s output.
+
+Measured on this machine: `stages=6`, `shell-inside=0`,
+`runtime-uid=65532`, `token-in-history=0`, `token-in-config=0`,
+`token-in-layers=0`.
+
+### kind, not minikube — checked, not assumed
+
+`docker info` on the machine this was built on: **3.827 GiB total
+memory, 4 CPUs**. kind's containers-as-nodes model has no separate VM
+overhead the way minikube's docker driver does, and minikube refuses to
+start at all under `--memory 1800mb` — on a budget this tight, that
+headroom matters more during the rolling-update demo, which
+briefly needs capacity for `maxSurge: 1`'s extra pod.
+
+Measured on this machine: **48s** cold start the very first time (pulling
+the `kindest/node:v1.37.0` node image), **18s** on every run after (node
+image already cached locally) — `kubectl get nodes` reports `Ready` a few
+seconds after that. Real memory: **740.5MiB** (`docker stats`) while the
+cluster is up; tearing it down (`npm run cluster:down`) measurably frees
+it back (observed 2656MB → 3163MB free across one teardown on this run).
+
+### Cluster lifecycle
+
+- `npm run cluster:up` — idempotent create (`k8s/kind-config.yaml`,
+  single control-plane node), waits for the node to report `Ready`, then
+  `kind load docker-image nodejspro-ecom-api:k8s` so the cluster can
+  actually see the image it needs — a plain `docker build` on the host
+  is invisible to kind's own containerd otherwise, the most common cause
+  of a pod stuck in `ErrImagePull`. Safe to re-run: reloads the image
+  every time even if the cluster already existed, in case it was rebuilt
+  since the last run.
+- `npm run cluster:down` — `kind delete cluster`, nothing else on the
+  machine is touched.
+- NodePort `30080` (host port `8080`) is reserved in `k8s/kind-config.yaml`
+  now, ahead of the Service that will actually bind it (Stage 4/5), so
+  the rollout demo can curl the app directly from the host rather than
+  through `kubectl port-forward`'s own connection semantics, which would
+  confuse "did a request fail" with "did the tunnel reconnect."
+
+### Pulumi program (`infra/`)
+
+Typed `Namespace` + `Secret` + a `WebService` `ComponentResource`
+(`Deployment` + `Service` for now; `PodDisruptionBudget`/`HPA` join the
+same component in later stages — see its own file for why they're
+bundled together and `Namespace`/`Secret` aren't). Local file backend
+only (`PULUMI_BACKEND_URL=file://…`), never `pulumi login` — see
+`## Grading` below.
+
+`infra/index.ts` validates every required env var **before** creating
+anything, so a missing one fails immediately and names itself, rather
+than failing three resources into an `up`.
+
+| Variable               | Source            | Why                             |
+| ---------------------- | ----------------- | ------------------------------- |
+| `JWT_KID`              | сховище (#11/#24) | key id for access-token signing |
+| `JWT_PRIVATE_KEY`      | сховище (#11/#24) | access-token signing key        |
+| `JWT_PUBLIC_KEY`       | сховище (#11/#24) | access-token verification key   |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11/#24) | refresh-token hash pepper       |
+
+These four are real HW #24 vault secrets — no new env file, per the HW's
+own instruction. They're also the _only_ ones that need real values:
+`DataSourceService`, `RabbitMqService`, and `RedisConnectionService` are
+all deliberately lazy (see each one's own code comment — "the app boots
+and `--wait` passes even when \[the dependency\] is down"), and `GET
+/health` touches none of them. The one exception is `JwtKeysService`,
+which eagerly calls `createPrivateKey`/`createPublicKey` in its
+constructor specifically so a bad key fails at boot — which is exactly
+why these four, and only these four, need to be genuine. Every other
+required field in `env.schema.ts` (`DB_URL`, `BROKER_URL`, `REDIS_URL`,
+`REDIS_QUEUE_URL`, `STORAGE_*`) gets a plain, inert placeholder straight
+in the Deployment spec: not secret (they're locations, not credentials),
+and never dereferenced on this pod's actual request path.
+
+**Industry-standard alternatives to this wrapper-script flow.** This
+setup reads the secret from the vault into the shell running `pulumi
+up`, which then writes it into a `k8s.core.v1.Secret` the program
+creates directly — fine for a local, single-operator `dev` stack, but
+two established patterns replace the human-in-the-loop step for a real
+team/cluster: **ESO** (External Secrets Operator) runs inside the
+cluster and syncs a vault secret into a native `Secret` object on its
+own schedule, so no one's shell ever holds the value; **CSI** (the
+Secrets Store CSI Driver) skips the `Secret` object entirely and mounts
+the vault value straight into the pod's filesystem at run time. Neither
+is installed here — not needed for one local stack — but either is the
+real next step once more than one person needs to deploy this.
+
+### Probes and graceful shutdown
+
+Two new, separate endpoints (`src/controllers/health/health.controller.ts`),
+matching the HW's own `/healthz`/`/readyz` naming — `/health` and
+`/health/db` are untouched, since `docker/Dockerfile`'s `runner` target
+(used by `docker-compose.yml`) still depends on `/health` for its
+`HEALTHCHECK`.
+
+- **`GET /healthz`** — liveness. Shallow, never touches a downstream
+  dependency. Coupling liveness to DB/broker/cache health is a named
+  Kubernetes anti-pattern: one shared dependency blip restarts every pod
+  of every service depending on it, worsening an incident instead of
+  fixing it.
+- **`GET /readyz`** — readiness, backed by `ReadinessService`
+  (`src/services/readiness.service.ts`). Failing this only pulls the pod
+  out of load-balancing rotation — no restart, no cascade — which is why
+  it's the one safe to flip during shutdown.
+
+**SIGTERM ordering.** `ReadinessService` implements NestJS's
+`beforeApplicationShutdown(signal)`, not a hand-rolled
+`process.on('SIGTERM', ...)`. Checked `@nestjs/core`'s actual shutdown
+sequence before relying on it: `callDestroyHook` (every provider's
+`onModuleDestroy`) → `callBeforeShutdownHook` (`beforeApplicationShutdown`)
+→ `dispose()` (closes the HTTP server) → `callShutdownHook`. Only
+`beforeApplicationShutdown` runs _before_ the socket actually closes, so
+that's where "flip `ready=false`, then wait `DRAIN_MS`" has to live — a
+separate signal handler would race Nest's own (already enabled via
+`app.enableShutdownHooks()`). This is also why `DatabaseService`,
+`DataSourceService`, `RabbitMqService`, and `RedisConnectionService`
+(base class for `CacheRedisConnection`/`QueueRedisConnection`) implement
+`onApplicationShutdown` rather than `onModuleDestroy`: `onModuleDestroy`
+runs _before_ `beforeApplicationShutdown`, so it would close every live
+dependency connection before the drain window even started.
+`onApplicationShutdown` runs last, after `dispose()` has already closed
+the HTTP server — by then no in-flight or racing request can still need
+one of these connections.
+
+**`DRAIN_MS`/`WARMUP_MS`/`REV`/`HARDENED`** are deployment-lifecycle
+knobs, not app config — kept deliberately outside `env.schema.ts` (which
+has no `.strict()`, so it already ignores unknown keys — nothing to break
+by keeping these separate). They split into two different mechanisms,
+easy to conflate:
+
+- **`DRAIN_MS`** and **`WARMUP_MS`** are real **container env vars** —
+  they're in the Deployment's pod template (`infra/index.ts`'s `env:`
+  block), shipped into the running pod, and read via `process.env` inside
+  the app itself: `DRAIN_MS` by `ReadinessService`'s shutdown sleep,
+  `WARMUP_MS` by the pre-`listen()` delay in `src/index.ts`. `WARMUP_MS`
+  defaults to `4000` **permanently**, not a demo-only raise — the HW's
+  own guidance: a near-instant-starting app can make even a broken
+  rollout profile measure a false zero, because the rolling update
+  never catches it mid-startup. 4s stands in for a realistic
+  migrations/DB-pool warmup, the same way a real service would take a
+  few seconds before it can actually serve anything.
+- **`HARDENED`** is a **Pulumi-program-time** toggle only — read by
+  `infra/index.ts` itself (on the machine running `pulumi up`, not inside
+  the pod) to pick which `WebService` branch to build. It never reaches
+  the container's env at all; `npm run up` with it unset behaves exactly
+  like `hardened: true` always did.
+- **`REV`** is also a container env var, but — deliberately — nothing in
+  `src/` ever reads it. Kubernetes decides whether to roll pods over by
+  diffing the pod template's literal fields (image string, env, labels,
+  …), never by looking inside the image for a content change. Since this
+  HW's local-`kind` workflow reuses one fixed image tag
+  (`nodejspro-ecom-api:k8s`, no registry, no per-build tag), rebuilding
+  and reloading that image changes nothing Kubernetes can see in the
+  template — `pulumi up` would compute no diff and never trigger a
+  rollout. `REV`'s only job is to be a value that changes between calls
+  (`demo-rollout.mjs` bumps it, e.g. `'2'` → `'3'`) so there's something
+  in the template for Kubernetes to notice and roll over — the same
+  category of trick as the `restartedAt` annotation `kubectl rollout
+restart` injects for the same reason. Real production avoids needing
+  this at all by tagging each build uniquely (a commit SHA or digest)
+  instead of reusing a static tag.
+
+Committed defaults: `hardened:true`, `WARMUP_MS:4000`, `REV:1`. `npm run
+up` with nothing exported deploys exactly that. `k8s/demo/demo-rollout.mjs`
+bumps `REV` itself each run (to force the one rollout it measures) but
+never touches `HARDENED`/`WARMUP_MS` — to see the broken profile fail
+instead, deploy it yourself first (`HARDENED=false npm run up`), then
+run the demo again.
+
+**The `hardened` flag** on `WebServiceArgs` controls `strategy.rollingUpdate`,
+`terminationGracePeriodSeconds`, and both probes together, as one flag —
+they only make sense as a set. `hardened: true` (what's deployed now):
+`maxUnavailable: 0`/`maxSurge: 1`, grace `20s` (comfortably more than
+`DRAIN_MS`'s `5000`, and a deliberate value, not Kubernetes' own
+unexamined default of `30`), both probes present. `hardened: false` is
+what Stage 6's demo flips to, to produce the "broken" comparison profile
+from the exact same component.
+
+**Bonus: `startupProbe`, not a bigger `livenessProbe.initialDelaySeconds`.**
+A slow/uneven start (migrations, cache warmup) is tempting to handle by
+just padding `initialDelaySeconds` until it's bigger than the worst-case
+startup time — but that's a magic number that has to be re-tuned by
+hand every time startup time changes, and for that whole padded window
+liveness isn't actually watching for a real hang either. `startupProbe`
+(`web-service.ts`, same `/healthz`, `periodSeconds: 2, failureThreshold:
+30` — a 60s budget) is the structural fix: liveness and readiness don't
+run _at all_ until it passes once, then it disables itself permanently.
+Measured the failure mode directly rather than asserting it: with the
+old pattern (no `startupProbe`, `initialDelaySeconds: 5`) and a
+simulated 30s startup, the pod was killed and restarted at **~38s** —
+_before_ it ever finished starting, which would just repeat forever if
+startup is consistently that slow. With `startupProbe`'s 60s budget,
+the same 30s startup is comfortably inside it and liveness never even
+evaluates until the app is actually up.
+
+### Working with the cluster
+
+Two different tools, two different jobs — mixing them up is the easiest
+way to get confused:
+
+- **Pulumi** (`infra/`) is declarative: it owns the _desired_ state
+  (replica count, image, probes, env). `pulumi up` diffs the real cluster
+  against `infra/index.ts` and reconciles it. Anything meant to persist
+  goes through this code — a `kubectl` change Pulumi doesn't know about
+  (e.g. `kubectl scale`) gets reverted on the next `pulumi up`.
+- **kubectl** is imperative: for _observing_ the cluster, and for one-off
+  operational actions whose effects Kubernetes' own controllers reconcile
+  around (deleting a pod doesn't change how many replicas _should_
+  exist — the Deployment controller just creates a replacement).
+
+```bash
+# Pulumi — changes what should exist
+pulumi -C infra preview        # dry-run diff, no changes applied
+npm run up                     # apply infra/index.ts (pulumi up --yes)
+npm run destroy                # tear down every resource it created
+pulumi -C infra stack ls       # stacks in the local .pulumi/ backend
+
+# kubectl — observe, or one-off ops the controllers reconcile around
+kubectl -n nodejspro-ecom get pods -o wide
+kubectl -n nodejspro-ecom get deploy,svc
+kubectl -n nodejspro-ecom describe pod <pod>
+kubectl -n nodejspro-ecom logs -f <pod>
+kubectl -n nodejspro-ecom delete pod <pod>                               # forces SIGTERM; controller replaces it
+kubectl -n nodejspro-ecom rollout restart deployment/nodejspro-ecom-api  # re-pulls a freshly `kind load`-ed same-tag image
+```
+
+**kubectl doesn't reach pods directly.** kind runs the whole cluster as
+one Docker container (`nodejspro-ecom-control-plane`) with containerd
+nested inside it running the actual pods (`docker exec
+nodejspro-ecom-control-plane crictl ps` shows them). kind publishes the
+API server's port to a random port on `localhost` — that's the
+`https://127.0.0.1:<port>` in `kubectl config view` — so kubectl always
+talks to the API server, never straight to a pod; `logs`/`exec` work
+because the API server proxies them through the kubelet. The pod network
+(`10.244.0.x`) itself isn't routable from the host at all, which is why
+curling a pod's own IP (e.g. to catch `/readyz` mid-drain) needs a
+disposable pod running _inside_ the cluster, not `curl` from a host
+terminal.
+
+**Reaching the app from the host** is a separate chain: pod `:3000` →
+Service `nodePort: 30080` → kind's `extraPortMappings` → host `:8080`
+(`k8s/kind-config.yaml`) — `http://localhost:8080`, not `:3000` (`:3000`
+is only live when running the plain `docker compose` stack instead).
+
+**Stopping vs. pausing.** `npm run destroy` only removes the
+Pulumi-managed resources (Namespace/Secret/Deployment/Service) — the kind
+cluster itself keeps running, empty. The full teardown is both, in
+order: `npm run destroy && npm run cluster:down`. One gotcha:
+`pulumi destroy` still re-executes `infra/index.ts` to build the resource
+graph before it can diff what to delete, so the same `REQUIRED`
+env-var check runs too (`JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`/
+`REFRESH_TOKEN_PEPPER` must still be exported in the current shell, or
+destroy fails before touching anything).
+
+If you just want to stop for now and pick back up later — no rebuild, no
+`pulumi up`, nothing redone — don't destroy anything, pause it instead:
+
+```bash
+# pause just the pods, keep the cluster running
+kubectl -n nodejspro-ecom scale deployment/nodejspro-ecom-api --replicas=0
+# resume: scale back to 2, or just `npm run up` — Pulumi's desired state
+# still says replicas: 2, so it reconciles back up on its own
+
+# pause the whole kind cluster (heaviest pause, nothing deleted)
+docker stop nodejspro-ecom-control-plane
+# resume:
+docker start nodejspro-ecom-control-plane
+```
+
+`docker stop`/`start` on the control-plane container is exactly what a
+Docker Desktop quit/restart does to it — the container exits (`Exited
+(137)`) but nothing about it is deleted, so pods/Deployment/Service are
+all still there the moment it's started again.
+
+### Rollout demo (`npm run demo:rollout`)
+
+`k8s/demo/demo-rollout.mjs` is criterion 6's own measurement, not a claim:
+it reads whatever profile is currently deployed (`profile=1` if
+`readinessProbe` is present, else `0`), pauses the HPA for the duration
+(see below for why and how), fires ~30 concurrent workers at
+`GET /healthz`, and triggers exactly one real rollout (bumps `REV`,
+which forces a genuine pod-template change — see `WARMUP_MS`/`REV`
+above for why that's necessary). Every response code (or `000` for a
+connection that never completed) gets appended to a file as it happens;
+`requests`/`ok`/`failed` are computed by reading that file back
+afterward, never from an in-memory tally.
+
+**The load generator runs _inside_ the cluster**, not from this host —
+a disposable pod (`curlimages/curl`) gets `kubectl exec`'d into, hitting
+the Service's cluster-internal DNS name (`nodejspro-ecom-api
+.nodejspro-ecom.svc.cluster.local`), not `localhost:8080`. This wasn't
+the original design — caught live, the hard way: the exact same load
+and the exact same rollout measured through this host's own
+`localhost:8080` (kind's `extraPortMappings` → Docker Desktop's own
+port-forwarding → the kind node → kube-proxy → the pod) showed a small
+but real, reproducible failure rate at high request volume. Measuring
+the _identical_ load from a pod running inside the cluster instead —
+bypassing that whole host-side forwarding chain — showed zero. That
+proved the gap was this local Mac/Docker-Desktop/kind hostPort chain's
+own quirk, not a Kubernetes-level zero-downtime gap: a real client of
+this Service is inside the cluster's own network, so measuring from
+there is both the fairer test and the one that actually matches what
+criterion 6 is asking.
+
+One genuine server-side fix came out of chasing this down anyway, kept
+because it's correct regardless: `ReadinessService.beforeApplicationShutdown`
+now also calls the HTTP server's `closeIdleConnections()` the moment it
+flips `ready=false` (`src/services/readiness.service.ts`,
+`src/index.ts` wires the server reference in). A client holding a
+keep-alive connection from before `SIGTERM` has no way to know this pod
+is draining — readiness only stops the Service from handing this pod's
+IP to _new_ connections. Without this, that client's next request
+reuses the old socket and gets a connection reset the instant `dispose()`
+finally closes it, even though the deployment itself never actually
+went unavailable. `closeIdleConnections()` evicts only _idle_ keep-alive
+sockets right away — a request already in flight keeps running — so
+the client reconnects and lands on a pod that's actually still
+accepting.
+
+**Why pause the HPA first, and why by deleting it rather than pinning
+`min`/`max`.** Caught live: this demo's own load is real CPU work,
+enough to trigger the Stage 8 HPA mid-measurement — a second, unrelated
+scaling event confounds the rollout being measured. Pinning
+`minReplicas`/`maxReplicas` to freeze it was tried first and dropped:
+it still leaves a real propagation-timing question — how long until
+the HPA controller and metrics-server's own scrape cycle actually
+catch up to the pin? Caught live, twice: once patching mid-scale
+produced a chaotic multi-ReplicaSet transition of its own, and once a
+scale decision already in flight executed _after_ the pin anyway,
+scaling 2→4→2 during the measurement despite it. A longer wait after
+patching only narrows that window, never closes it — it's always a
+guess, not a guarantee.
+
+The actual fix: delete the HPA object outright for the duration, then
+recreate it from a saved copy of its spec in a `finally` block. No
+controller watching it, nothing can scale, by construction — the same
+reasoning chaos-engineering tooling (Litmus, Gremlin-style runbooks)
+gives for "disable the autoscaler before the experiment, restore it
+after." A `process.on('exit')` handler recreates it even on an
+unexpected crash — this already happened once, from an unrelated
+unhandled-rejection bug caught while building this script, which would
+otherwise have left the cluster without an HPA at all.
+
+It polls `GET /healthz`, not a business endpoint — this deployment has
+no reachable Postgres (see above), so `GET /products` would 500
+regardless of rollout health, telling you nothing about the rollout
+itself. `/healthz` is the honest stand-in: cheap, always-200
+server-side, never touches a dependency, so any non-200 or connection
+error is attributable purely to routing/startup timing. Real production
+zero-downtime testing hits real business traffic — scoped out here only
+because nothing else is reachable in this cluster.
+
+To see the broken profile actually fail instead of the committed
+hardened one, deploy it yourself first — `HARDENED=false npm run up` —
+then run `npm run demo:rollout` again; it measures whatever's currently
+live, it doesn't choose for you.
+
+Measured locally (one run each — see the script's own output for the
+authoritative numbers on any given run, which will vary with timing):
+
+- **hardened (`profile=1`, committed default)**: `requests=24437`,
+  `ok=24437`, `failed=0`, `rollout-seconds=21.0` — reproduced across
+  four separate runs (24437 / 24595 / 24122 / 21966 requests, `failed=0`
+  every time).
+- **broken (`profile=0`)**: `requests=25245`, `ok=22270`, `failed=2975`
+  (11.8%) — in line with the HW's own expectation that the broken
+  profile's failure rate ~ "floats around roughly one in six".
+
+**Why the hardened profile has no downtime.** Three mechanisms acting
+together, not one: (1) the **readinessProbe** (`/readyz`) is what adds a
+pod to the Service's `Endpoints` list in the first place — a new pod
+never receives traffic until it actually passes it, so "not listening
+yet" can't become "getting requests," unlike the broken profile above.
+(2) **`maxUnavailable: 0`** forces the rollout to wait for that new,
+now-Ready pod before removing an old one — capacity never dips below the
+desired replica count. (3) On the way out, the same readinessProbe
+flips `ReadinessService.isReady()` to false on `SIGTERM` (see "Probes
+and graceful shutdown" above), removing the terminating pod from
+`Endpoints` immediately, while `DRAIN_MS` keeps its HTTP server open long
+enough for any request that was already routed to it to finish instead
+of being cut off mid-flight. Each piece covers a different half of the
+transition (new pod coming up / old pod going down); removing any one of
+them reopens the gap the broken profile demonstrates above.
+
+**The sequence this produces, with `replicas: 2`:** pod count goes _up_
+first, never down. A new pod is created (surge, now 3 — the nominal cap,
+`replicas + maxSurge`) while both old pods keep serving untouched; only
+once that new pod passes `/readyz` does Kubernetes touch an old one —
+it `SIGTERM`s it. The moment that delete is issued, the controller's own
+scheduling math stops counting that pod against the surge budget, so it
+immediately starts the second new pod too — even though the dying pod's
+object is still sitting there as `Terminating` for several real seconds
+(`DRAIN_MS` + grace), not yet gone from `kubectl get pods`. That's how
+the _visible_ count can briefly reach 4 even though the controller's own
+budget never exceeds 3: the cap bounds what the controller counts as
+active, not how many pod objects can physically coexist while one is
+still draining. The number of pods actually able to serve traffic never
+drops below 2 either way. Verified live with `kubectl get pods -w`
+during a real rollout.
+
+### PodDisruptionBudget (`npm run demo:pdb`)
+
+`maxUnavailable` above only governs disruptions the Deployment
+controller itself drives (a rollout). It says nothing about a
+disruption started from _outside_ — `kubectl drain` draining a node, a
+cluster-autoscaler scaling one down, anyone manually evicting a pod. A
+`PodDisruptionBudget` (`infra/components/web-service.ts`, `minAvailable:
+1` with `replicas: 2`) guards exactly that case — but only through one
+specific mechanism: the **Eviction API**
+(`POST /api/v1/namespaces/{ns}/pods/{pod}/eviction`). A plain `kubectl
+delete pod` — what every drain test elsewhere in this README used —
+bypasses the PDB entirely; it isn't an eviction.
+
+`k8s/demo/demo-pdb.mjs` proves this with the real API, not a substitute:
+`kubectl proxy` to reach the API server, then a direct `POST` of a
+`policy/v1 Eviction` object for each of the two pods. `minAvailable: 1`
+means evicting _one_ pod is allowed (1 remains), but evicting the
+_second_ while the first hasn't been replaced yet should be rejected (0
+would remain) — true only at exactly 2 replicas, since `replicas -
+minAvailable` has to equal 1 for a single eviction to consume the whole
+budget. Caught live: running this right after the HPA had scaled to 3
+for an unrelated reason made the second eviction wrongly succeed too
+(1 pod still remained, satisfying `minAvailable: 1` either way) — so
+this script deletes the HPA and scales to exactly 2 itself first (same
+technique and same reasoning as `k8s/demo/demo-rollout.mjs`'s `pauseHpa`),
+restoring the HPA from a saved copy of its spec in a `finally` block.
+It prints `healthy`/`minAvailable` read live from
+the PDB's own `.status.currentHealthy`/`.spec.minAvailable` (not
+guessed), then `evict-1`/`evict-2` — the two real eviction statuses.
+
+Measured locally: `healthy=2`, `minAvailable=1`, `evict-1=201`,
+`evict-2=429`.
+
+### HorizontalPodAutoscaler (`npm run demo:hpa`)
+
+An HPA (`infra/components/web-service.ts`, `minReplicas: 2,
+maxReplicas: 4, targetCpuPercent: 50`) needs a metrics source to scale
+on at all — this `kind` cluster doesn't ship one by default
+(`kubectl top nodes` fails with `Metrics API not available` until
+`scripts/cluster-up.sh` installs metrics-server). That install belongs
+in the cluster bootstrap script, not `infra/`'s own Pulumi program:
+metrics-server is platform infrastructure every workload in the cluster
+shares, not something this one service owns. kind's kubelet serving
+certs also aren't signed for metrics-server's default TLS verification,
+so the install patches in `--kubelet-insecure-tls` (kind's own
+documented fix).
+
+**Once the HPA exists, the Deployment stops asserting `replicas` at
+all** (`web-service.ts`) — an HPA sets that field directly, under its
+own field manager, and if Pulumi kept asserting a fixed value on every
+`pulumi up`, it would fight the HPA's own decision and revert whatever
+it scaled to. This relies on Pulumi's server-side apply never
+re-claiming a field it stops mentioning — worth verifying live rather
+than trusting: scale up under load, run `npm run up` again, and confirm
+the HPA-set replica count survives (see `### HW #28 commands`).
+
+The demo's load generator (`k8s/demo/demo-hpa.mjs`) is deliberately
+**concurrent** — 60 parallel workers hammering `/healthz` through the
+Service — unlike the rollout demo's sequential one; a handful of
+requests per second would never meaningfully exceed the container's
+`100m` CPU request.
+
+`behavior.scaleDown.stabilizationWindowSeconds: 30` — Kubernetes' own
+default is 5 minutes, there specifically to protect _production_
+traffic from flapping-driven instability. That concern doesn't apply to
+this dev-only stack (there's only the one `dev` stack, nothing real
+depends on it), so `30` is a deliberate, permanent choice for this
+environment — the kind of thing a real per-environment values file
+would set, not a demo-only toggle. Production environments should keep
+the 5-minute default. Because it's permanent rather than something the
+demo flips on and off, `k8s/demo/demo-hpa.mjs` doesn't touch `infra/` or
+need any secrets — it only needs cluster access.
+
+Measured locally (`100m` CPU request, permanent `30s` window): idle
+settled at `7%–13%/50%` — comfortably below target, finally distinguishable
+from real load. Under the 60-worker load, utilization hit `779%` and
+the HPA scaled 2 → 4; after load stopped it dropped back to single digits
+and scaled cleanly back to 2, settling there — a complete round trip with
+no secrets exported and no lingering oscillation.
 
 ## Grading
 
@@ -2631,3 +3175,30 @@ npm run test:e2e
 npm run test:contract
 npm run verify:provider
 ```
+
+### HW #28 commands
+
+Separate from the `docker compose` flow above — this deploys into the
+local `kind` cluster instead (see `## Kubernetes`). Reuses the same
+shell's `JWT_KID`/`JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY`/`REFRESH_TOKEN_PEPPER`
+and `SKIP_VAULT=1` exports from `### Setup` above — only these two are
+new:
+
+```bash
+export PULUMI_BACKEND_URL="file://$PWD/.pulumi"
+export PULUMI_CONFIG_PASSPHRASE=hw28-dev   # matches infra/Pulumi.dev.yaml's committed encryptionsalt
+
+npm --prefix infra ci
+npx --prefix infra tsc --noEmit
+pulumi -C infra stack init dev   # fresh .pulumi/ has no stack yet — `up` fails with "no stack selected" without this
+printf 'dummy-npm-token' > .npm_token   # build-time secret demo; never in git
+npm run image:build
+npm run cluster:up
+npm run up
+npm run demo:image
+npm run demo:rollout
+npm run demo:pdb
+npm run demo:hpa
+```
+
+Teardown: `npm run destroy && npm run cluster:down`.

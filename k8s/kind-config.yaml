@@ -1,0 +1,15 @@
+# Single node — this machine's Docker allocation (3.827 GiB) doesn't
+# support more, and the HW requires a single-node cluster anyway.
+# extraPortMappings reserves the NodePort the Stage 4/5 Service will
+# bind, so the rollout demo can curl it directly from the host without
+# kubectl port-forward's own connection semantics muddying the "did a
+# request fail" measurement.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: nodejspro-ecom
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - containerPort: 30080
+        hostPort: 8080
+        protocol: TCP

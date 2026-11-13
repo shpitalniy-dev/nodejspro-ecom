@@ -3,6 +3,7 @@ services:
     image: nodejspro-ecom-api:dev
     build:
       context: .
+      dockerfile: docker/Dockerfile
       target: deps
     # Compose's `environment:` doesn't merge with the base file's by key —
     # it replaces it wholesale — so PORT/DB_URL's fresh-clone fallback (see

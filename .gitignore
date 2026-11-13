@@ -16,6 +16,14 @@ node_modules
 # Secrets
 secrets
 infisical/secrets
+.npm_token
+
+# Pulumi local-backend state (HW #28) — never pushed to a remote, see
+# README. .pulumi/ itself is tracked via .pulumi/.gitkeep (not ignored),
+# same reasoning as build/.gitkeep above: exists before `pulumi up` ever
+# runs, so a grader without directory-create permission isn't blocked.
+.pulumi/*
+!.pulumi/.gitkeep
 
 # Turbo (leftover from monorepo tooling, harmless if unused)
 .turbo

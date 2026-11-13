@@ -8,6 +8,7 @@ services:
     image: nodejspro-ecom-api:prod
     build:
       context: .
+      dockerfile: docker/Dockerfile
       target: runner
     env_file:
       # required: false — a fresh clone has no .env yet (gitignored by
@@ -467,6 +468,7 @@ services:
   garage-init:
     build:
       context: .
+      dockerfile: docker/Dockerfile
       target: deps
     volumes:
       - ./scripts/garage-init.mjs:/app/garage-init.mjs:ro

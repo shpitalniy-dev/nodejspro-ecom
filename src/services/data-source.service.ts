@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readFile } from 'node:fs/promises';
 import type { EntityManager } from 'typeorm';
@@ -8,7 +8,7 @@ import { Env } from '../config/env.schema.ts';
 import { entities } from '../entities/index.ts';
 
 @Injectable()
-export class DataSourceService implements OnModuleDestroy {
+export class DataSourceService implements OnApplicationShutdown {
   readonly dataSource: DataSource;
 
   private initPromise: Promise<DataSource> | null = null;
@@ -47,7 +47,7 @@ export class DataSourceService implements OnModuleDestroy {
     return this.initPromise.then(dataSource => dataSource.manager);
   }
 
-  async onModuleDestroy(): Promise<void> {
+  async onApplicationShutdown(): Promise<void> {
     if (this.dataSource.isInitialized) {
       await this.dataSource.destroy();
     }

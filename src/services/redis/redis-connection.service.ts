@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import type { Redis } from 'ioredis';
 
 import { createRedisClient } from './redis.factory.ts';
@@ -9,7 +9,7 @@ import { createRedisClient } from './redis.factory.ts';
 // QueueRedisConnection — those two differ only in which env var supplies
 // the URL, so the URL is the only thing a subclass needs to provide.
 @Injectable()
-export abstract class RedisConnectionService implements OnModuleDestroy {
+export abstract class RedisConnectionService implements OnApplicationShutdown {
   private client: Redis | null = null;
 
   constructor(private readonly url: string) {}
@@ -20,7 +20,7 @@ export abstract class RedisConnectionService implements OnModuleDestroy {
     return Promise.resolve(this.client);
   }
 
-  async onModuleDestroy(): Promise<void> {
+  async onApplicationShutdown(): Promise<void> {
     await this.client?.quit().catch(() => undefined);
   }
 }

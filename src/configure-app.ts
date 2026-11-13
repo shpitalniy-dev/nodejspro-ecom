@@ -28,7 +28,8 @@ export function configureApp(app: NestExpressApplication): void {
       apiSpec: path.join(process.cwd(), 'openapi/openapi.yaml'),
       validateRequests: true,
       validateResponses: true,
-      // /health: not in the contract at all.
+      // /health, /health/db, /healthz, /readyz: health-check paths, not in
+      // the contract at all.
       // /orders/:id/events (HW#18): IS in the contract's URL space in
       // spirit, but validateResponses:true buffers a response to check it
       // against a schema — fundamentally incompatible with an SSE stream
@@ -36,7 +37,8 @@ export function configureApp(app: NestExpressApplication): void {
       // left unvalidated by omission.
       // /assets/:key (HW#26 demo:cdn): raw bytes with a per-asset
       // content-type, not a JSON resource this spec's schemas describe.
-      ignorePaths: /^\/health|^\/orders\/\d+\/events$|^\/assets\//,
+      ignorePaths:
+        /^\/health(z|\/db)?$|^\/readyz$|^\/orders\/\d+\/events$|^\/assets\//,
     }),
   );
 

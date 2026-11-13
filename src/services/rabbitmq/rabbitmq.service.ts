@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { ChannelModel } from 'amqplib';
 
@@ -9,7 +9,7 @@ import { connectBroker } from './rabbitmq.connection.ts';
 // Lazy, like DataSourceService: the app boots and `--wait` passes even when
 // the broker is down. Only the first caller that needs a connection opens it.
 @Injectable()
-export class RabbitMqService implements OnModuleDestroy {
+export class RabbitMqService implements OnApplicationShutdown {
   private connection: Promise<ChannelModel> | null = null;
 
   constructor(private readonly config: ConfigService<Env, true>) {}
@@ -34,7 +34,7 @@ export class RabbitMqService implements OnModuleDestroy {
     });
   }
 
-  async onModuleDestroy(): Promise<void> {
+  async onApplicationShutdown(): Promise<void> {
     const connection = await this.connection?.catch(() => undefined);
 
     await connection?.close().catch(() => undefined);

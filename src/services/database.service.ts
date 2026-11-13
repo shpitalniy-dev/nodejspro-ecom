@@ -1,4 +1,4 @@
-import { Injectable, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, OnApplicationShutdown } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { readFile } from 'node:fs/promises';
 import { Pool } from 'pg';
@@ -6,7 +6,7 @@ import { Pool } from 'pg';
 import { Env } from '../config/env.schema.ts';
 
 @Injectable()
-export class DatabaseService implements OnModuleDestroy {
+export class DatabaseService implements OnApplicationShutdown {
   private readonly pool: Pool;
 
   constructor(config: ConfigService<Env, true>) {
@@ -36,7 +36,7 @@ export class DatabaseService implements OnModuleDestroy {
     );
   }
 
-  onModuleDestroy() {
+  onApplicationShutdown() {
     return this.pool.end();
   }
 }
