@@ -1,0 +1,13 @@
+{
+  "name": "nodejspro-ecom-infra-demo",
+  "private": true,
+  "description": "HW #31 — RDS Multi-AZ, ALB + target group, NAT behind hw31:withNat. Everything here bills hourly while it exists.",
+  "dependencies": {
+    "@pulumi/aws": "7.55.0",
+    "@pulumi/pulumi": "3.248.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

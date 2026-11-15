@@ -1,0 +1,13 @@
+{
+  "name": "nodejspro-ecom-infra-base",
+  "private": true,
+  "description": "HW #31 — budget, VPC (2 public/2 private subnets, 2 AZs), security groups, IAM/OIDC role for CI. Nothing hourly-billed: safe to leave standing.",
+  "dependencies": {
+    "@pulumi/aws": "7.55.0",
+    "@pulumi/pulumi": "3.248.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}

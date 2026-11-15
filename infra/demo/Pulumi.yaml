@@ -1,0 +1,9 @@
+name: nodejspro-ecom-aws-demo
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: >-
+  HW #31. RDS Multi-AZ instance (db.t4g.micro, gp3 20GiB), ALB + target
+  group, NAT Gateway behind the hw31:withNat flag. Billed hourly — up only
+  for the duration of a demo run.
