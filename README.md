@@ -2470,7 +2470,7 @@ cluster, no cloud account or payment method needed. This section grows
 across HW #28's own stages — only cluster bootstrap exists so far.
 
 **Demos self-heal cluster drift.** `demo:rollout`, `demo:pdb` and
-`demo:hpa` share `demo/utils.mjs`, whose `ensureDefaultState()` runs
+`demo:hpa` share `k8s/demo/utils.mjs`, whose `ensureDefaultState()` runs
 first in each of them: it deletes any stray load pod left over from a
 previous run, then unconditionally re-runs `npm run up` and waits for
 the Deployment and PDB to converge, before the demo's own test logic
@@ -2510,7 +2510,7 @@ final filesystem, but still sitting in the layer blob underneath). A
 `--mount=type=secret` is only ever available inside that one `RUN`,
 never written to any layer at all.
 
-**`npm run demo:image`'s contract** (`scripts/demo-image.mjs`) — six
+**`npm run demo:image`'s contract** (`docker/demo/demo-image.mjs`) — six
 numbers, each computed from a live `docker` command against the
 _actual built image_, never printed from a guess:
 
@@ -2690,7 +2690,7 @@ restart` injects for the same reason. Real production avoids needing
   instead of reusing a static tag.
 
 Committed defaults: `hardened:true`, `WARMUP_MS:4000`, `REV:1`. `npm run
-up` with nothing exported deploys exactly that. `demo/demo-rollout.mjs`
+up` with nothing exported deploys exactly that. `k8s/demo/demo-rollout.mjs`
 bumps `REV` itself each run (to force the one rollout it measures) but
 never touches `HARDENED`/`WARMUP_MS` — to see the broken profile fail
 instead, deploy it yourself first (`HARDENED=false npm run up`), then
@@ -2803,7 +2803,7 @@ all still there the moment it's started again.
 
 ### Rollout demo (`npm run demo:rollout`)
 
-`demo/demo-rollout.mjs` is criterion 6's own measurement, not a claim:
+`k8s/demo/demo-rollout.mjs` is criterion 6's own measurement, not a claim:
 it reads whatever profile is currently deployed (`profile=1` if
 `readinessProbe` is present, else `0`), pauses the HPA for the duration
 (see below for why and how), fires ~30 concurrent workers at
@@ -2940,7 +2940,7 @@ specific mechanism: the **Eviction API**
 delete pod` — what every drain test elsewhere in this README used —
 bypasses the PDB entirely; it isn't an eviction.
 
-`demo/demo-pdb.mjs` proves this with the real API, not a substitute:
+`k8s/demo/demo-pdb.mjs` proves this with the real API, not a substitute:
 `kubectl proxy` to reach the API server, then a direct `POST` of a
 `policy/v1 Eviction` object for each of the two pods. `minAvailable: 1`
 means evicting _one_ pod is allowed (1 remains), but evicting the
@@ -2951,7 +2951,7 @@ budget. Caught live: running this right after the HPA had scaled to 3
 for an unrelated reason made the second eviction wrongly succeed too
 (1 pod still remained, satisfying `minAvailable: 1` either way) — so
 this script deletes the HPA and scales to exactly 2 itself first (same
-technique and same reasoning as `demo/demo-rollout.mjs`'s `pauseHpa`),
+technique and same reasoning as `k8s/demo/demo-rollout.mjs`'s `pauseHpa`),
 restoring the HPA from a saved copy of its spec in a `finally` block.
 It prints `healthy`/`minAvailable` read live from
 the PDB's own `.status.currentHealthy`/`.spec.minAvailable` (not
@@ -2983,7 +2983,7 @@ re-claiming a field it stops mentioning — worth verifying live rather
 than trusting: scale up under load, run `npm run up` again, and confirm
 the HPA-set replica count survives (see `### HW #28 commands`).
 
-The demo's load generator (`demo/demo-hpa.mjs`) is deliberately
+The demo's load generator (`k8s/demo/demo-hpa.mjs`) is deliberately
 **concurrent** — 60 parallel workers hammering `/healthz` through the
 Service — unlike the rollout demo's sequential one; a handful of
 requests per second would never meaningfully exceed the container's
@@ -2997,7 +2997,7 @@ depends on it), so `30` is a deliberate, permanent choice for this
 environment — the kind of thing a real per-environment values file
 would set, not a demo-only toggle. Production environments should keep
 the 5-minute default. Because it's permanent rather than something the
-demo flips on and off, `demo/demo-hpa.mjs` doesn't touch `infra/` or
+demo flips on and off, `k8s/demo/demo-hpa.mjs` doesn't touch `infra/` or
 need any secrets — it only needs cluster access.
 
 Measured locally (`100m` CPU request, permanent `30s` window): idle
