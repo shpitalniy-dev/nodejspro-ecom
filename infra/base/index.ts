@@ -7,7 +7,8 @@ import { CiRole } from './components/ci-role';
 import { Network } from './components/network';
 import { SecurityGroups } from './components/security-groups';
 
-const BUDGET_EMAIL = process.env.BUDGET_EMAIL || 'placeholder@example.invalid';
+const BUDGET_EMAIL =
+  process.env.HW31_BUDGET_EMAIL || 'placeholder@example.invalid';
 
 new Budget('hw31', { email: BUDGET_EMAIL });
 

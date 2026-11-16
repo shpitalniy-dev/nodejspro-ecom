@@ -3151,6 +3151,137 @@ scripts) — identical across 3 consecutive runs each.
 | `demo:metrics` | `sent-ok=50 sent-fail=50 counter-delta=100 errors-delta=50 above-top-bucket=0 series-before=2 series-after=2`                                            | 0    |
 | `demo:trace`   | `spans=50 orphan-spans=0 trace-matches-header=1 trace-matches-log=1 span-status-error=1`                                                                 | 0    |
 
+## AWS | HW #31
+
+смуга: основна
+teardown-run: TBA — the `.../actions/runs/<id>` link for the `workflow_dispatch` run being submitted, once stage 8's live run exists
+регіон: eu-central-1
+
+This AWS account pre-existed this homework, so there's no Free plan here — real money from minute one, and the budget + automatic teardown are the only protection against forgetting about the stack.
+
+Two Pulumi programs: `infra/base/` (budget, VPC, subnets, IGW, route
+tables, security groups, the CI OIDC role) costs **$0** and can sit for a
+week; `infra/demo/` (RDS, ALB, target group, NAT behind `hw31:withNat`)
+is everything billed hourly, and only exists for the duration of a demo
+run.
+
+### Hourly rate
+
+TBA — check every row against the AWS Pricing Calculator / pricing pages
+yourself and record the date you actually looked; don't copy the
+lecture's own snapshot.
+
+| Line item                                        | Rate | Date checked | 730h/month |
+| ------------------------------------------------ | ---- | ------------ | ---------- |
+| ALB                                              | TBA  | TBA          | TBA        |
+| RDS `db.t4g.micro` PostgreSQL, Multi-AZ instance | TBA  | TBA          | TBA        |
+| gp3 20 GiB (Multi-AZ, doubled)                   | TBA  | TBA          | TBA        |
+| Public IPv4 × 2 (under the ALB)                  | TBA  | TBA          | TBA        |
+| LCU (assumed load, not a price-list rate)        | TBA  | —            | TBA        |
+| **Total**                                        |      |              | **TBA**    |
+
+Derived from that one total: TBA ÷ 730h = **TBA/h** → × 4h (spin up,
+demo, tear down same evening) = **TBA** → × 24h = **TBA/day** forgotten.
+
+NAT is deliberately **not** in this table — `infra/base` never creates
+one; `demo:nat` measures exactly what it would have cost
+(`nat-minutes`, `nat-billed-hours` in `evidence/demos.txt`) without ever
+leaving one running.
+
+### IAM — the teardown role's permissions
+
+[`infra/base/components/ci-role.ts`](infra/base/components/ci-role.ts)'s
+trust policy narrows `Principal.Federated` to the GitHub OIDC provider,
+`aud` to `sts.amazonaws.com`, and `sub` to this repo only (two patterns,
+covering GitHub's legacy and immutable-ID claim formats). The permission
+policy has no `"*"` in any `Action` (`Resource: "*"` only, because the
+demo stack's ARNs don't exist yet when base creates this role). One line
+per permission:
+
+| Permission                                   | Why                                                                                              |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `rds:DeleteDBInstance`                       | delete the RDS instance once the demo stack is torn down                                         |
+| `rds:DescribeDBInstances`                    | confirm the instance is actually gone (`rds-left` check)                                         |
+| `rds:DeleteDBSubnetGroup`                    | delete the DB subnet group the instance was attached to                                          |
+| `rds:DescribeDBSubnetGroups`                 | confirm the subnet group is gone                                                                 |
+| `rds:ListTagsForResource`                    | confirm which RDS resources carry this stack's Project/Stack tags before deleting                |
+| `elasticloadbalancing:DeleteLoadBalancer`    | delete the ALB                                                                                   |
+| `elasticloadbalancing:DeleteListener`        | delete the ALB's listener                                                                        |
+| `elasticloadbalancing:DeleteTargetGroup`     | delete the target group                                                                          |
+| `elasticloadbalancing:DeregisterTargets`     | detach the Lambda target before the target group can be deleted                                  |
+| `elasticloadbalancing:DescribeLoadBalancers` | confirm the ALB is actually gone (`alb-left` check)                                              |
+| `elasticloadbalancing:DescribeListeners`     | read listener state during delete                                                                |
+| `elasticloadbalancing:DescribeTargetGroups`  | confirm the target group is gone                                                                 |
+| `elasticloadbalancing:DescribeTargetHealth`  | read target health during delete                                                                 |
+| `ec2:DeleteNatGateway`                       | delete the NAT Gateway (when `hw31:withNat` created one)                                         |
+| `ec2:DescribeNatGateways`                    | confirm it's actually deleted (`nat-left` check)                                                 |
+| `ec2:ReleaseAddress`                         | release the NAT's Elastic IP                                                                     |
+| `ec2:DisassociateAddress`                    | detach the EIP from the NAT before it can be released                                            |
+| `ec2:DescribeAddresses`                      | confirm no EIP is left behind (`eip-left` check — the one it's easy to forget)                   |
+| `lambda:DeleteFunction`                      | delete the ALB's Lambda target                                                                   |
+| `lambda:GetFunction`                         | confirm the function is actually gone                                                            |
+| `lambda:RemovePermission`                    | remove the ALB's invoke permission before the function can be deleted                            |
+| `lambda:GetPolicy`                           | read the function's resource policy during cleanup                                               |
+| `iam:DeleteRole`                             | delete the Lambda's execution role                                                               |
+| `iam:GetRole`                                | confirm the role is actually gone                                                                |
+| `iam:DetachRolePolicy`                       | detach `AWSLambdaBasicExecutionRole` first — IAM refuses to delete a role with attached policies |
+| `iam:ListAttachedRolePolicies`               | find which managed policies are attached, to detach them                                         |
+| `iam:ListRolePolicies`                       | find any inline policies on the role, to delete them                                             |
+| `iam:DeleteRolePolicy`                       | delete any inline policy before deleting the role itself                                         |
+| `tag:GetResources`                           | the teardown job's own `tagged-resources-left` check, in both regions                            |
+| `sts:GetCallerIdentity`                      | confirm which identity this role is actually running as, before deleting anything                |
+
+`evidence/iam.txt` (criterion B2's required negative test —
+`aws iam simulate-principal-policy`, not a guess about what the policy
+says):
+
+```
+sim-allowed=allowed      # rds:DescribeDBInstances, an action this role has
+sim-denied=implicitDeny  # s3:DeleteBucket, an action it has nowhere in the policy
+```
+
+### RDS Multi-AZ vs. my stack from #15
+
+Not "everything." Multi-AZ takes over exactly what its name says: a
+synchronous standby in a second AZ, automatic failover between them
+(`demo:failover` forces and measures this), storage encryption, and the
+underlying host/patch maintenance — all invisible infrastructure #15's
+stack never had. What it does **not** replace: `#15`'s PgBouncer is a
+connection pooler sitting in front of Postgres; RDS has no built-in
+equivalent, so a real app in front of this instance would still need its
+own pooler. `#15`'s `backup.sh` produces a portable `pg_dump -Fc` you can
+`pg_restore` anywhere; RDS's automated backups are AWS-native snapshots —
+useful for restoring into another RDS instance, not a portable dump
+file. And WAL-based PITR here is something AWS runs for you, not
+something you configure or can inspect the way `#15`'s own WAL archiving
+does. Schema migrations, connection pool sizing, and everything
+app-level stay exactly as much your job as they were on `#15`.
+
+### KMS
+
+Storage encryption here (`storageEncrypted: true`) uses KMS underneath —
+but KMS is a layer below the secrets vault from `#11` (Infisical), not a
+replacement for it. The vault still stores and hands out the actual
+application secret (`ENCRYPTION_KEY`); what KMS encrypts here is the RDS
+volume at rest, one level down from anything the app reads.
+Deliberately **no customer-managed key**: a CMK bills ~$1/month
+regardless of use and carries a mandatory 7–30 day pending-deletion
+window, so it's a line item `destroy` cannot remove the same day. The
+AWS-managed default key costs nothing extra and is good enough for what
+this homework encrypts.
+
+### State backend vs. #28
+
+`#28`'s kind cluster is this laptop — its own `file://` Pulumi backend
+state living on disk was fine because nothing outside this machine ever
+needed to read it. `teardown.yml` runs on a GitHub-hosted runner, a
+different machine entirely, so a local `file://` backend would be
+invisible to it. Both stacks here use **Pulumi Cloud** instead (an
+individual account — $0): `pulumi login` once locally, and the CI job
+authenticates to the same organization via a `PULUMI_ACCESS_TOKEN`
+secret, so `pulumi destroy` in CI operates on the exact same stack state
+`up:demo` created, not a second copy of it.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -3375,3 +3506,91 @@ npm run demo:trace
 ```
 
 Teardown: `docker compose -f observability/compose.yml down`.
+
+### HW #31 commands
+
+Real AWS, not a local stack — nothing here runs without the steps below.
+
+**One-time setup (per machine, already done once for this repo's `dev` stacks):**
+
+```bash
+pulumi login   # Pulumi Cloud — the state backend both infra/base and infra/demo use
+
+# AWS credentials: a named profile, never the "default" one or aws configure
+# (those are global and would affect every other project on this machine).
+mkdir -p ~/.aws
+cat >> ~/.aws/credentials <<'EOF'
+[hw31-deploy]
+aws_access_key_id = YOUR_ACCESS_KEY_ID
+aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
+EOF
+
+pulumi stack init dev --cwd infra/base
+pulumi stack init dev --cwd infra/demo
+
+pulumi config set aws:region eu-central-1 --cwd infra/base --stack dev
+pulumi config set --path aws:defaultTags.tags.Project nodejs-pro-hw31 --cwd infra/base --stack dev
+pulumi config set --path aws:defaultTags.tags.Stack base --cwd infra/base --stack dev
+pulumi config set --path aws:defaultTags.tags.ManagedBy pulumi --cwd infra/base --stack dev
+pulumi config set --path "azs[0]" eu-central-1a --cwd infra/base --stack dev
+pulumi config set --path "azs[1]" eu-central-1b --cwd infra/base --stack dev
+
+pulumi config set aws:region eu-central-1 --cwd infra/demo --stack dev
+pulumi config set --path aws:defaultTags.tags.Project nodejs-pro-hw31 --cwd infra/demo --stack dev
+pulumi config set --path aws:defaultTags.tags.Stack demo --cwd infra/demo --stack dev
+pulumi config set --path aws:defaultTags.tags.ManagedBy pulumi --cwd infra/demo --stack dev
+```
+
+`HW31_BUDGET_EMAIL` (read by `infra/base/index.ts`) and `HW31_DB_PASSWORD` (read by
+`infra/demo/index.ts`) go in Infisical's `dev` environment, not as shell
+exports — same vault every other `demo:*`/`migrate`/`seed` script already
+uses. Without `HW31_BUDGET_EMAIL` set there, the budget still gets created, just
+subscribed to a placeholder address that never receives the alert.
+
+**Env vars to export before every command below** (these are per-shell,
+never written to a file — see `## AWS`'s note on why):
+
+```bash
+export AWS_PROFILE=hw31-deploy
+export AWS_REGION=eu-central-1
+export HW31_REAL_AWS=1   # the one-line gate every demo:*/evidence:* script checks before touching AWS
+```
+
+**The actual sequence, in order** (each of these already goes through
+`scripts/with-secrets.sh`, so Infisical secrets are injected automatically —
+no need to export `HW31_BUDGET_EMAIL`/`HW31_DB_PASSWORD` yourself):
+
+```bash
+npm run up:base        # VPC, SGs, budget, CI role — the $0 stack
+npm run evidence:base  # writes evidence/base.txt + evidence/base-state.json
+npm run evidence:iam   # writes evidence/iam.json + evidence/iam.txt
+
+npm run up:demo         # RDS, ALB, target group — billed hourly from here
+npm run demo:failover   # each of these three appends to evidence/demos.txt
+npm run demo:alb
+npm run demo:nat
+
+npm run destroy:demo    # tear down the hourly stack once all three demos ran
+```
+
+**The graded teardown run** is a separate, real `workflow_dispatch` of
+`.github/workflows/teardown.yml` on GitHub — not anything from the list
+above. Before it can run, set these once in the repo's GitHub settings
+(Settings → Secrets and variables → Actions):
+
+```bash
+gh variable set HW31_CI_ROLE_ARN --body "<ciRoleArn output from up:base>"
+gh secret set PULUMI_ACCESS_TOKEN   # paste your Pulumi Cloud access token when prompted
+```
+
+Then trigger it and grab the run link for `## AWS`'s `teardown-run:` line:
+
+```bash
+gh workflow run teardown.yml
+gh run list --workflow=teardown.yml --limit 1   # gives the run id/link once it finishes
+```
+
+Only after that run exists and its link is in the README: `npm run
+destroy:base` — the OIDC role that run depends on lives in `infra/base`, so
+destroying `base` first would strand the teardown workflow with nothing to
+assume.
