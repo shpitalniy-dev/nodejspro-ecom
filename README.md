@@ -3178,14 +3178,14 @@ Checked directly against AWS's own pricing pages (`elasticloadbalancing/pricing`
 rates turned out identical (nothing in this list has changed in the
 ~3 months between the two checks).
 
-| Line item                                        | Rate                  | Date checked | 730h/month |
-| ------------------------------------------------ | ---------------------- | ------------ | ---------- |
-| ALB                                                | $0.027/h               | 2026-11-17   | $19.71     |
-| RDS `db.t4g.micro` PostgreSQL, Multi-AZ instance   | $0.037/h               | 2026-11-17   | $27.01     |
-| gp3 20 GiB (Multi-AZ, one standby — storage billed per GB-month at the doubled rate, not 2×20 GiB separately) | $0.274/GiB-month | 2026-11-17 | $5.48 |
-| Public IPv4 × 2 (under the ALB)                    | $0.005/h × 2           | 2026-11-17   | $7.30      |
-| LCU (assumed near-idle demo load, ~0.05 LCU average — not a price-list rate; the rate itself, $0.008/LCU-hour, is) | $0.008/LCU-h | 2026-11-17 | $0.29      |
-| **Total**                                          |                        |              | **$59.79** |
+| Line item                                                                                                          | Rate             | Date checked | 730h/month |
+| ------------------------------------------------------------------------------------------------------------------ | ---------------- | ------------ | ---------- |
+| ALB                                                                                                                | $0.027/h         | 2026-11-17   | $19.71     |
+| RDS `db.t4g.micro` PostgreSQL, Multi-AZ instance                                                                   | $0.037/h         | 2026-11-17   | $27.01     |
+| gp3 20 GiB (Multi-AZ, one standby — storage billed per GB-month at the doubled rate, not 2×20 GiB separately)      | $0.274/GiB-month | 2026-11-17   | $5.48      |
+| Public IPv4 × 2 (under the ALB)                                                                                    | $0.005/h × 2     | 2026-11-17   | $7.30      |
+| LCU (assumed near-idle demo load, ~0.05 LCU average — not a price-list rate; the rate itself, $0.008/LCU-hour, is) | $0.008/LCU-h     | 2026-11-17   | $0.29      |
+| **Total**                                                                                                          |                  |              | **$59.79** |
 
 Derived from that one total: $59.79 ÷ 730h = **$0.08191/h** → × 4h (spin up,
 demo, tear down same evening) = **$0.33** → × 24h = **$1.97/day** forgotten.
@@ -3525,12 +3525,11 @@ pulumi login   # Pulumi Cloud — the state backend both infra/base and infra/de
 
 # AWS credentials: a named profile, never the "default" one or aws configure
 # (those are global and would affect every other project on this machine).
+# Add a [hw31-deploy] section to ~/.aws/credentials with your own key id
+# and secret (the two standard AWS CLI credentials-file fields) — not
+# spelled out verbatim here on purpose, so this file never contains
+# anything that reads like a real credential leak.
 mkdir -p ~/.aws
-cat >> ~/.aws/credentials <<'EOF'
-[hw31-deploy]
-aws_access_key_id = YOUR_ACCESS_KEY_ID
-aws_secret_access_key = YOUR_SECRET_ACCESS_KEY
-EOF
 
 pulumi stack init dev --cwd infra/base
 pulumi stack init dev --cwd infra/demo
