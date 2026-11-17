@@ -5,3 +5,4 @@ config:
       Project: nodejs-pro-hw31
       Stack: demo
       ManagedBy: pulumi
+  nodejspro-ecom-aws-demo:withNat: 'false'

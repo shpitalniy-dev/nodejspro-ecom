@@ -56,7 +56,11 @@ if (config.getBoolean('withNat')) {
   });
 }
 
-export const dbInstanceId = database.instance.id;
+// `.id` resolves to RDS's internal DbiResourceId (e.g. "db-ABC123...");
+// `.identifier` is the actual DBInstanceIdentifier (`hw31-db`) that
+// DescribeDBInstances/RebootDBInstance need — confirmed on a real `up:demo`
+// run, where `.id` came back as the former, not the latter.
+export const dbInstanceId = database.instance.identifier;
 export const albDns = loadBalancer.dnsName;
 export const targetGroupArn = loadBalancer.targetGroupArn;
 export const targetFunctionName = loadBalancer.targetFunctionName;

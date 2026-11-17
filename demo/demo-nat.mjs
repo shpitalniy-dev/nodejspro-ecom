@@ -21,11 +21,15 @@ import {
 async function main() {
   realAwsGate('demo:nat');
 
-  pulumiConfigSet(DEMO_DIR, 'hw31:withNat', 'true');
+  // No namespace prefix: `new pulumi.Config()` in infra/demo/index.ts reads
+  // this unqualified, so it resolves against the project's own default
+  // namespace (nodejspro-ecom-aws-demo) — "hw31:withNat" would silently
+  // land somewhere nothing reads, confirmed the hard way on a real run.
+  pulumiConfigSet(DEMO_DIR, 'withNat', 'true');
   const upSeconds = pulumiUp(DEMO_DIR);
   const natId = pulumiOutput(DEMO_DIR, 'natGatewayId');
 
-  pulumiConfigSet(DEMO_DIR, 'hw31:withNat', 'false');
+  pulumiConfigSet(DEMO_DIR, 'withNat', 'false');
   const downSeconds = pulumiUp(DEMO_DIR);
 
   const ec2 = new EC2Client({});
