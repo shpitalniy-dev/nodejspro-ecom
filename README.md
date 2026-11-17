@@ -3167,21 +3167,23 @@ run.
 
 ### Hourly rate
 
-TBA — check every row against the AWS Pricing Calculator / pricing pages
-yourself and record the date you actually looked; don't copy the
-lecture's own snapshot.
+Checked directly against AWS's own pricing pages (`elasticloadbalancing/pricing`,
+`rds/postgresql/pricing`, `vpc/pricing`), region Europe (Frankfurt), on
+2026-11-17 — not copied from the lecture's 24.08.2026 snapshot, though the
+rates turned out identical (nothing in this list has changed in the
+~3 months between the two checks).
 
-| Line item                                        | Rate | Date checked | 730h/month |
-| ------------------------------------------------ | ---- | ------------ | ---------- |
-| ALB                                              | TBA  | TBA          | TBA        |
-| RDS `db.t4g.micro` PostgreSQL, Multi-AZ instance | TBA  | TBA          | TBA        |
-| gp3 20 GiB (Multi-AZ, doubled)                   | TBA  | TBA          | TBA        |
-| Public IPv4 × 2 (under the ALB)                  | TBA  | TBA          | TBA        |
-| LCU (assumed load, not a price-list rate)        | TBA  | —            | TBA        |
-| **Total**                                        |      |              | **TBA**    |
+| Line item                                        | Rate                  | Date checked | 730h/month |
+| ------------------------------------------------ | ---------------------- | ------------ | ---------- |
+| ALB                                                | $0.027/h               | 2026-11-17   | $19.71     |
+| RDS `db.t4g.micro` PostgreSQL, Multi-AZ instance   | $0.037/h               | 2026-11-17   | $27.01     |
+| gp3 20 GiB (Multi-AZ, one standby — storage billed per GB-month at the doubled rate, not 2×20 GiB separately) | $0.274/GiB-month | 2026-11-17 | $5.48 |
+| Public IPv4 × 2 (under the ALB)                    | $0.005/h × 2           | 2026-11-17   | $7.30      |
+| LCU (assumed near-idle demo load, ~0.05 LCU average — not a price-list rate; the rate itself, $0.008/LCU-hour, is) | $0.008/LCU-h | 2026-11-17 | $0.29      |
+| **Total**                                          |                        |              | **$59.79** |
 
-Derived from that one total: TBA ÷ 730h = **TBA/h** → × 4h (spin up,
-demo, tear down same evening) = **TBA** → × 24h = **TBA/day** forgotten.
+Derived from that one total: $59.79 ÷ 730h = **$0.08191/h** → × 4h (spin up,
+demo, tear down same evening) = **$0.33** → × 24h = **$1.97/day** forgotten.
 
 NAT is deliberately **not** in this table — `infra/base` never creates
 one; `demo:nat` measures exactly what it would have cost
