@@ -3154,7 +3154,7 @@ scripts) — identical across 3 consecutive runs each.
 ## AWS | HW #31
 
 смуга: основна
-teardown-run: TBA — the `.../actions/runs/<id>` link for the `workflow_dispatch` run being submitted, once stage 8's live run exists
+teardown-run: https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44136355375
 регіон: eu-central-1
 
 This AWS account pre-existed this homework, so there's no Free plan here — real money from minute one, and the budget + automatic teardown are the only protection against forgetting about the stack.
