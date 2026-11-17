@@ -1,0 +1,70 @@
+name: teardown
+
+# Tears down the demo stack (RDS, ALB, NAT) every night and on demand, so
+# nothing hourly-billed survives an ended session by accident. Auth is the
+# OIDC role infra/base's CiRole component creates — no AWS keys stored in
+# GitHub at all. No PULUMI_CONFIG_PASSPHRASE: Pulumi Cloud (not a self-hosted
+# backend) handles secrets encryption on its own.
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for GitHub to issue the OIDC token
+  contents: read
+
+env:
+  AWS_REGION: eu-central-1
+  PROJECT_TAG: nodejs-pro-hw31
+  STACK_TAG: demo
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - run: npm ci
+        working-directory: infra/demo
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.HW31_CI_ROLE_ARN }} # infra/base stack's ciRoleArn output
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: pulumi/actions@v6
+
+      - name: pulumi destroy
+        working-directory: infra/demo
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+        run: pulumi destroy --yes --skip-preview --stack dev
+
+      - name: six zeros
+        working-directory: infra/demo
+        env:
+          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          # A deleted NAT Gateway stays visible to the tagging API for a
+          # while, so it's excluded here — nat-left below counts live ones
+          # by state instead.
+          tagged() {
+            aws resourcegroupstaggingapi get-resources --region "$1" \
+              --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
+              --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])" \
+              --output text
+          }
+
+          echo "state-resources-left=$(pulumi stack export --stack dev | jq '[.deployment.resources[]? | select(.type | startswith("aws:"))] | length')"
+          echo "tagged-resources-left=$(( $(tagged "$AWS_REGION") + $(tagged us-east-1) ))"
+          echo "rds-left=$(aws rds describe-db-instances --region "$AWS_REGION" --query 'length(DBInstances)' --output text)"
+          echo "alb-left=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" --query 'length(LoadBalancers)' --output text)"
+          echo "nat-left=$(aws ec2 describe-nat-gateways --region "$AWS_REGION" --filter Name=state,Values=available,pending --query 'length(NatGateways)' --output text)"
+          echo "eip-left=$(aws ec2 describe-addresses --region "$AWS_REGION" --query 'length(Addresses)' --output text)"
