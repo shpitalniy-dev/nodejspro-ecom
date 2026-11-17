@@ -3157,6 +3157,11 @@ scripts) — identical across 3 consecutive runs each.
 teardown-run: https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44136355375
 регіон: eu-central-1
 
+This repo has three `package.json` files (repo root, `infra/base`,
+`infra/demo`) — the fixed npm scripts (`up:base`, `up:demo`,
+`destroy:demo`, `destroy:base`, `demo:failover`, `demo:nat`, `demo:alb`)
+are all in the **repo root's `package.json`**, not either `infra/*` one.
+
 This AWS account pre-existed this homework, so there's no Free plan here — real money from minute one, and the budget + automatic teardown are the only protection against forgetting about the stack.
 
 Two Pulumi programs: `infra/base/` (budget, VPC, subnets, IGW, route
