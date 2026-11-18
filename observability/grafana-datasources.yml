@@ -1,8 +1,8 @@
 # Mounted into otel-lgtm's Grafana at
-# /etc/grafana/provisioning/datasources/ — a distinct filename from the
-# image's own built-in Prometheus/Tempo/Loki datasources, so this adds to
-# them rather than colliding. `prometheus` resolves via compose's own
-# network (both services share this file's project network).
+# /otel-lgtm/grafana/conf/provisioning/datasources/ — a distinct filename
+# from the image's own built-in Prometheus/Tempo/Loki datasources, so this
+# adds to them rather than colliding. `prometheus` resolves via compose's
+# own network (both services share this file's project network).
 apiVersion: 1
 
 datasources:

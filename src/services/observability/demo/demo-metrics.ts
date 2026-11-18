@@ -7,14 +7,22 @@ import { DURATION_BUCKETS, registry } from '../metrics.ts';
 
 import { resetStock } from './demo-utils.ts';
 
-// demo:metrics — HW #29 (b). Proves the label set is bounded: a hundred
-// different Idempotency-Key values (a real, per-request identifier this
-// app already has, HW #22) must never become a hundred new time series.
+// demo:metrics — HW #29 (b). Two independent claims:
+// 1. errors-delta counts real server errors (5xx), not client mistakes
+//    (4xx) — forced via checkout.ts's DEMO_FAIL_AFTER_OUTBOX hook, the same
+//    sanctioned demo-only failure path demo-trace.ts already uses, so this
+//    is a genuine unhandled exception traveling the real code path, not a
+//    mocked status.
+// 2. the label set is bounded: a hundred different product ids in the
+//    PATH (GET /products/:productId — a real route param, unlike a header,
+//    which Express's router never looks at) must never become a hundred
+//    new time series for that route.
 // Every number below is read back from the real shared `registry`
 // (prom-client's own `getMetricsAsJSON()`, same object red-metrics
 // .middleware.ts writes to and /metrics serves) — never printed from a
 // separately-tracked in-memory guess.
-const ROUTE = '/orders';
+const ORDERS_ROUTE = '/orders';
+const PRODUCTS_ROUTE = '/products/:productId';
 const METHOD = 'POST';
 const REQUEST_COUNT = 100; // ≥ 50 required; also the "100 distinct ids" check
 
@@ -54,6 +62,32 @@ function find(
   );
 }
 
+async function postOrder(
+  baseUrl: string,
+  body: string,
+  idempotencyKey: string,
+  forceFail: boolean,
+): Promise<Response> {
+  // DEMO_FAIL_AFTER_OUTBOX only exists for demos (checkout.ts: "Production
+  // never sets this") — it throws *after* the real transaction work runs,
+  // so this is a genuine unhandled exception on a real request, not a
+  // forced/fake HTTP status.
+  if (forceFail) process.env.DEMO_FAIL_AFTER_OUTBOX = '1';
+
+  try {
+    return await fetch(`${baseUrl}${ORDERS_ROUTE}`, {
+      method: METHOD,
+      headers: {
+        'content-type': 'application/json',
+        'idempotency-key': idempotencyKey,
+      },
+      body,
+    });
+  } finally {
+    if (forceFail) delete process.env.DEMO_FAIL_AFTER_OUTBOX;
+  }
+}
+
 async function main(): Promise<void> {
   const { app, baseUrl, close } = await startDemoApp();
   const failures: string[] = [];
@@ -75,41 +109,23 @@ async function main(): Promise<void> {
     const validBody = JSON.stringify({
       items: [{ productId: product.id, quantity: 1 }],
     });
-    // A productId no seeded product ever uses — a real 400 from
-    // OrdersService's own existing validation, not a forced/fake status.
-    const invalidBody = JSON.stringify({
-      items: [{ productId: 999_999_999, quantity: 1 }],
-    });
 
-    // Warm the route with BOTH outcomes once, before series-before —
-    // otherwise whichever status code this route hasn't produced yet
-    // (success, or the 400 the loop below also sends) would itself look
-    // like "new series" in the delta, for a reason that has nothing to do
-    // with the 100 distinct ids this check actually targets.
-    await fetch(`${baseUrl}${ROUTE}`, {
-      method: METHOD,
-      headers: {
-        'content-type': 'application/json',
-        'idempotency-key': 'demo-metrics-warmup-ok',
-      },
-      body: validBody,
-    });
-    await fetch(`${baseUrl}${ROUTE}`, {
-      method: METHOD,
-      headers: {
-        'content-type': 'application/json',
-        'idempotency-key': 'demo-metrics-warmup-fail',
-      },
-      body: invalidBody,
-    });
+    // Warm /orders with both outcomes, and /products/:productId with both
+    // outcomes too (200 for a real id, 404 for the ids the loop below
+    // actually uses), before either series-before — otherwise whichever
+    // status this demo hasn't produced yet would itself look like "new
+    // series" for a reason that has nothing to do with the checks below.
+    await postOrder(baseUrl, validBody, 'demo-metrics-warmup-ok', false);
+    await postOrder(baseUrl, validBody, 'demo-metrics-warmup-fail', true);
+    await fetch(`${baseUrl}/products/${product.id}`);
+    await fetch(`${baseUrl}/products/${product.id + 10_000 - 1}`);
 
-    const requestsBefore = (await valuesOf('http_requests_total')).filter(
-      s => s.labels.route === ROUTE,
+    const ordersBefore = (await valuesOf('http_requests_total')).filter(
+      s => s.labels.route === ORDERS_ROUTE,
     );
-    const seriesBefore = requestsBefore.length;
-    const totalBefore = sum(requestsBefore);
+    const totalBefore = sum(ordersBefore);
     const errorsBefore = sum(
-      requestsBefore.filter(s => Number(s.labels.status) >= 400),
+      ordersBefore.filter(s => Number(s.labels.status) >= 500),
     );
 
     let sentOk = 0;
@@ -117,27 +133,18 @@ async function main(): Promise<void> {
 
     for (let i = 0; i < REQUEST_COUNT; i++) {
       const ok = i % 2 === 0;
-      const res = await fetch(`${baseUrl}${ROUTE}`, {
-        method: METHOD,
-        headers: {
-          'content-type': 'application/json',
-          // 100 distinct ids — must never leak into a metric label.
-          'idempotency-key': `demo-metrics-${i}`,
-        },
-        body: ok ? validBody : invalidBody,
-      });
+      const res = await postOrder(baseUrl, validBody, `demo-metrics-${i}`, !ok);
 
       if (res.ok) sentOk++;
       else sentFail++;
     }
 
-    const requestsAfter = (await valuesOf('http_requests_total')).filter(
-      s => s.labels.route === ROUTE,
+    const ordersAfter = (await valuesOf('http_requests_total')).filter(
+      s => s.labels.route === ORDERS_ROUTE,
     );
-    const seriesAfter = requestsAfter.length;
-    const totalAfter = sum(requestsAfter);
+    const totalAfter = sum(ordersAfter);
     const errorsAfter = sum(
-      requestsAfter.filter(s => Number(s.labels.status) >= 400),
+      ordersAfter.filter(s => Number(s.labels.status) >= 500),
     );
 
     const counterDelta = totalAfter - totalBefore;
@@ -147,15 +154,29 @@ async function main(): Promise<void> {
     const durationValues = await valuesOf('http_request_duration_seconds');
     const durationCount = find(
       durationValues,
-      { method: METHOD, route: ROUTE },
+      { method: METHOD, route: ORDERS_ROUTE },
       'http_request_duration_seconds_count',
     );
     const durationTopBucket = find(
       durationValues,
-      { method: METHOD, route: ROUTE, le: topBucket },
+      { method: METHOD, route: ORDERS_ROUTE, le: topBucket },
       'http_request_duration_seconds_bucket',
     );
     const aboveTopBucket = durationCount - durationTopBucket;
+
+    // --- cardinality: 100 distinct product ids in the PATH, not a header ---
+    const seriesBefore = (await valuesOf('http_requests_total')).filter(
+      s => s.labels.route === PRODUCTS_ROUTE,
+    ).length;
+
+    for (let i = 0; i < REQUEST_COUNT; i++) {
+      // Need not exist — a 404 is fine, only the route *label* is checked.
+      await fetch(`${baseUrl}/products/${product.id + 10_000 + i}`);
+    }
+
+    const seriesAfter = (await valuesOf('http_requests_total')).filter(
+      s => s.labels.route === PRODUCTS_ROUTE,
+    ).length;
 
     console.log(`sent-ok=${sentOk}`);
     console.log(`sent-fail=${sentFail}`);

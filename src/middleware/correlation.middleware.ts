@@ -13,7 +13,7 @@ const accessLog = logger.child({ layer: 'http' });
 
 export function correlationMiddleware(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction,
 ): void {
   runInContext(
@@ -21,10 +21,10 @@ export function correlationMiddleware(
     () => {
       // req and body are logged as their own top-level fields (not nested
       // inside one object) so the redact config's paths
-      // (req.headers.authorization, body.password, *.token) land where
-      // they actually say they will. ip is its own field, not nested under
-      // req, so it survives even if req.headers ever needs redacting
-      // wholesale.
+      // (req.headers.authorization, req.headers.cookie, body.password,
+      // *.token) land where they actually say they will. ip is its own
+      // field, not nested under req, so it survives even if req.headers
+      // ever needs redacting wholesale.
       accessLog.info(
         {
           req: { method: req.method, url: req.url, headers: req.headers },
@@ -33,6 +33,25 @@ export function correlationMiddleware(
         },
         'request received',
       );
+
+      // The entry line above never knew the outcome; this is the only place
+      // every request's status gets recorded, success or failure alike (the
+      // real error detail for a 5xx is logged in full by
+      // ProblemExceptionFilter — this line isn't trying to duplicate that).
+      // Same res 'finish' technique as red-metrics.middleware.ts, for the
+      // same reason: it's the one point a final status code is guaranteed.
+      const startedAt = process.hrtime.bigint();
+
+      res.on('finish', () => {
+        accessLog.info(
+          {
+            status: res.statusCode,
+            'duration-ms': Number(process.hrtime.bigint() - startedAt) / 1e6,
+          },
+          'request completed',
+        );
+      });
+
       next();
     },
   );

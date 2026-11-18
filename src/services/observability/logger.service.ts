@@ -8,6 +8,7 @@ import { currentContext } from './context.ts';
 // (e.g. body.profile.token) is not hidden.
 const REDACT_PATHS = [
   'req.headers.authorization',
+  'req.headers.cookie',
   'password',
   'body.password',
   '*.token',
