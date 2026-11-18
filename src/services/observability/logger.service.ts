@@ -29,13 +29,19 @@ export const logger: pino.Logger = pino(
     timestamp: pino.stdTimeFunctions.isoTime,
     mixin() {
       const spanContext = trace.getActiveSpan()?.spanContext();
+      // Deliberately not the whole context: `request` (headers/body) stays
+      // out of the mixin so it doesn't land on every business-logic log
+      // line — see context.ts's own comment on that field.
+      const { userId, tenant, idempotencyKey } = currentContext() ?? {};
 
       return {
         ...(spanContext && {
           trace_id: spanContext.traceId,
           span_id: spanContext.spanId,
         }),
-        ...currentContext(),
+        ...(!!userId && { userId }),
+        ...(!!tenant && { tenant }),
+        ...(!!idempotencyKey && { idempotencyKey }),
       };
     },
     // Without this, pino JSON-stringifies the Error object passed as

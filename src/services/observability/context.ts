@@ -9,6 +9,19 @@ export interface RequestContext {
   userId?: string;
   tenant?: string;
   idempotencyKey?: string;
+  // Forensic snapshot for crash-handlers.ts only — deliberately NOT spread
+  // onto every log line by logger.service.ts's mixin (that would put the
+  // full request body on every business-logic line); a process-level
+  // crash handler has no closure over any request, so this is the only
+  // way it can know what was in flight when it fires. Named `req` to
+  // match the key every log call already uses for this same shape.
+  req?: {
+    method: string;
+    url: string;
+    headers: Record<string, unknown>;
+    body: unknown;
+    ip: string | undefined;
+  };
 }
 
 export const als = new AsyncLocalStorage<RequestContext>();
