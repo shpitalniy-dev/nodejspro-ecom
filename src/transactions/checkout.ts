@@ -8,6 +8,9 @@ import { Outbox } from '../entities/outbox.entity.ts';
 import { Product } from '../entities/product.entity.ts';
 import { Task } from '../entities/task.entity.ts';
 import { createInventoryRepository } from '../repositories/inventory.repository.ts';
+import { logger } from '../services/observability/logger.service.ts';
+
+const log = logger.child({ layer: 'orders.checkout' });
 
 // The core "buy now" operation: decrement balance, decrement stock, record
 // the order (one or more line items), queue its post-processing task — all
@@ -198,6 +201,8 @@ export async function checkout(
       status: 'paid',
       user: { id: userId },
     });
+
+    log.info({ orderId: order.id }, 'order persisted');
 
     await manager.getRepository(OrderItem).save(
       rows.map(row => ({

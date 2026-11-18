@@ -1,0 +1,13 @@
+# Tells Grafana to auto-load dashboard.json on startup (mounted alongside
+# it, see compose.yml) instead of it just being inert JSON sitting in git.
+# otel-lgtm isn't a standalone Grafana image — its provisioning root is
+# /otel-lgtm/grafana/conf/provisioning/, not /etc/grafana/provisioning/
+# (same reason compose.yml's own mount targets use that path).
+apiVersion: 1
+
+providers:
+  - name: nodejspro-ecom
+    type: file
+    updateIntervalSeconds: 30
+    options:
+      path: /otel-lgtm/grafana/conf/provisioning/dashboards/nodejspro-ecom

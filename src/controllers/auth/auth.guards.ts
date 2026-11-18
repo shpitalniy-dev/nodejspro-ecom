@@ -7,6 +7,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import type { Request } from 'express';
 
+import { currentContext } from '../../services/observability/context.ts';
 import { createRateLimitGuard } from '../../services/rate-limit/rate-limit.service.ts';
 
 import { AccessDenylistService } from './access-denylist.service.ts';
@@ -56,6 +57,16 @@ export class AuthGuard implements CanActivate {
     }
 
     req.user = result.claims;
+
+    // Enriches the ALS store correlation.middleware.ts already opened for
+    // this request — mutating it in place, not a second als.run(), so
+    // logs written before this guard ran (the access log) and after it
+    // (controller/service/checkout) share one context.
+    const ctx = currentContext();
+
+    if (ctx) {
+      ctx.userId = result.claims.sub;
+    }
 
     return true;
   }
