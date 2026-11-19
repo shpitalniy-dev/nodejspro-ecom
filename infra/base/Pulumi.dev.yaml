@@ -1,0 +1,10 @@
+config:
+  aws:region: eu-central-1
+  aws:defaultTags:
+    tags:
+      Project: nodejs-pro-hw31
+      Stack: base
+      ManagedBy: pulumi
+  nodejspro-ecom-aws-base:azs:
+    - eu-central-1a
+    - eu-central-1b

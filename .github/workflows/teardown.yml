@@ -1,0 +1,108 @@
+name: teardown
+
+# Tears down the demo stack (RDS, ALB, NAT) every night and on demand, so
+# nothing hourly-billed survives an ended session by accident. Auth is the
+# OIDC role infra/base's CiRole component creates — no AWS keys stored in
+# GitHub at all. No PULUMI_CONFIG_PASSPHRASE: Pulumi Cloud (not a self-hosted
+# backend) handles secrets encryption on its own.
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write # required for GitHub to issue the OIDC token
+  contents: read
+
+env:
+  PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
+
+jobs:
+  teardown:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/demo
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+
+      - run: npm ci
+
+      - uses: pulumi/actions@v6
+
+      # Region and tags come from the demo stack's own config (Pulumi.dev.yaml)
+      # — the single source of truth, nothing duplicated in this file. Needs
+      # only the Pulumi token, so it runs before AWS credentials exist.
+      - name: read stack config
+        run: |
+          set -euo pipefail
+          # Plain assignments, not $(...) inside echo: set -e only aborts on
+          # a failed substitution when it's an assignment, and an empty tag
+          # would make tagged-resources-left a false 0.
+          region=$(pulumi config get aws:region --stack dev)
+          project=$(pulumi config get --path 'aws:defaultTags.tags.Project' --stack dev)
+          stack=$(pulumi config get --path 'aws:defaultTags.tags.Stack' --stack dev)
+          {
+            echo "AWS_REGION=$region"
+            echo "PROJECT_TAG=$project"
+            echo "STACK_TAG=$stack"
+          } >> "$GITHUB_ENV"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.HW31_CI_ROLE_ARN }} # infra/base stack's ciRoleArn output
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: pulumi destroy
+        run: pulumi destroy --yes --skip-preview --stack dev
+
+      - name: six zeros
+        run: |
+          set -euo pipefail
+
+          # Every count sums both regions: us-east-1 hosts global-service
+          # endpoints (IAM, Budgets, billing) and is the usual console
+          # default, so it's where a stray resource most often turns up.
+          both() {
+            local n=0
+            for r in "$AWS_REGION" us-east-1; do
+              n=$(( n + $("$@" --region "$r" --output text) ))
+            done
+            echo "$n"
+          }
+
+          counts() {
+            state=$(pulumi stack export --stack dev | jq '[.deployment.resources[]? | select(.type | startswith("aws:"))] | length')
+            # A deleted NAT Gateway stays visible to the tagging API for a
+            # while, so it's excluded here — nat counts live ones by state.
+            tagged=$(both aws resourcegroupstaggingapi get-resources \
+              --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
+              --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])")
+            rds=$(both aws rds describe-db-instances --query 'length(DBInstances)')
+            alb=$(both aws elbv2 describe-load-balancers --query 'length(LoadBalancers)')
+            nat=$(both aws ec2 describe-nat-gateways --filter Name=state,Values=available,pending --query 'length(NatGateways)')
+            eip=$(both aws ec2 describe-addresses --query 'length(Addresses)')
+            total=$(( state + tagged + rds + alb + nat + eip ))
+          }
+
+          # AWS finishes some deletes after the API call returns (an ALB's
+          # public IPs, a NAT's EIP), so re-check until everything reaches 0,
+          # up to 20 x 15s. A real leak is still non-zero after that and fails.
+          for attempt in $(seq 1 20); do
+            counts
+            echo "attempt $attempt: state=$state tagged=$tagged rds=$rds alb=$alb nat=$nat eip=$eip"
+            [ "$total" -eq 0 ] && break
+            sleep 15
+          done
+
+          echo "state-resources-left=$state"
+          echo "tagged-resources-left=$tagged"
+          echo "rds-left=$rds"
+          echo "alb-left=$alb"
+          echo "nat-left=$nat"
+          echo "eip-left=$eip"
+          [ "$total" -eq 0 ]

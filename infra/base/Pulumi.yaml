@@ -1,0 +1,9 @@
+name: nodejspro-ecom-aws-base
+runtime:
+  name: nodejs
+  options:
+    typescript: true
+description: >-
+  HW #31. Budget (first resource) + VPC + 2 public/2 private subnets across
+  2 AZs + IGW + route tables + security groups + IAM/OIDC role for CI.
+  Nothing hourly-billed here — this stack can stand for a week at $0.

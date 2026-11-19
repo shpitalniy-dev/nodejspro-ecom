@@ -1,0 +1,13 @@
+az-before=eu-central-1b
+az-after=eu-central-1a
+failover-seconds=218.8
+event=Multi-AZ instance failover completed
+alb-dns=hw31-alb-e66794d-835900786.eu-central-1.elb.amazonaws.com
+http-code=200
+target-state=healthy
+alb-public-ipv4=2
+drain-seconds=67.1
+nat-minutes=2
+nat-billed-hours=1
+nat-up-seconds=107.7
+nat-down-seconds=62.1

@@ -1,0 +1,100 @@
+{
+  "trustPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::682179397515:oidc-provider/token.actions.githubusercontent.com"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+          },
+          "StringLike": {
+            "token.actions.githubusercontent.com:sub": [
+              "repo:shpitalniy-dev/nodejspro-ecom:*",
+              "repo:shpitalniy-dev@*/nodejspro-ecom@*:*"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "permissionPolicy": {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Action": [
+          "rds:DeleteDBInstance",
+          "rds:DescribeDBInstances",
+          "rds:DeleteDBSubnetGroup",
+          "rds:DescribeDBSubnetGroups",
+          "rds:ListTagsForResource"
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "Rds"
+      },
+      {
+        "Action": [
+          "elasticloadbalancing:DeleteLoadBalancer",
+          "elasticloadbalancing:DeleteListener",
+          "elasticloadbalancing:DeleteTargetGroup",
+          "elasticloadbalancing:DeregisterTargets",
+          "elasticloadbalancing:DescribeLoadBalancers",
+          "elasticloadbalancing:DescribeListeners",
+          "elasticloadbalancing:DescribeTargetGroups",
+          "elasticloadbalancing:DescribeTargetHealth"
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "Elb"
+      },
+      {
+        "Action": [
+          "ec2:DeleteNatGateway",
+          "ec2:DescribeNatGateways",
+          "ec2:ReleaseAddress",
+          "ec2:DisassociateAddress",
+          "ec2:DescribeAddresses"
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "Nat"
+      },
+      {
+        "Action": [
+          "lambda:DeleteFunction",
+          "lambda:GetFunction",
+          "lambda:RemovePermission",
+          "lambda:GetPolicy"
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "LambdaTarget"
+      },
+      {
+        "Action": [
+          "iam:DeleteRole",
+          "iam:GetRole",
+          "iam:DetachRolePolicy",
+          "iam:ListAttachedRolePolicies",
+          "iam:ListRolePolicies",
+          "iam:DeleteRolePolicy",
+          "iam:ListInstanceProfilesForRole"
+        ],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "LambdaExecutionRole"
+      },
+      {
+        "Action": ["tag:GetResources", "sts:GetCallerIdentity"],
+        "Effect": "Allow",
+        "Resource": "*",
+        "Sid": "Audit"
+      }
+    ]
+  }
+}
