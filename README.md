@@ -3154,7 +3154,7 @@ scripts) — identical across 3 consecutive runs each.
 ## AWS | HW #31
 
 смуга: основна
-teardown-run: TBA
+teardown-run: https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44604550848/job/135844644150
 регіон: eu-central-1
 
 This repo has three `package.json` files (repo root, `infra/base`,
