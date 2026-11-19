@@ -50,7 +50,11 @@ async function main() {
 
   const { SecurityGroups } = await ec2.send(
     new DescribeSecurityGroupsCommand({
-      Filters: [{ Name: 'vpc-id', Values: [vpcId] }],
+      // tag filter excludes the VPC's untagged AWS-created default SG
+      Filters: [
+        { Name: 'vpc-id', Values: [vpcId] },
+        { Name: 'tag:Stack', Values: ['base'] },
+      ],
     }),
   );
 

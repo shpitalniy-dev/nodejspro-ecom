@@ -15,13 +15,14 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: eu-central-1
-  PROJECT_TAG: nodejs-pro-hw31
-  STACK_TAG: demo
+  PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
 
 jobs:
   teardown:
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infra/demo
     steps:
       - uses: actions/checkout@v7
 
@@ -30,41 +31,57 @@ jobs:
           node-version: '24'
 
       - run: npm ci
-        working-directory: infra/demo
+
+      - uses: pulumi/actions@v6
+
+      # Region and tags come from the demo stack's own config (Pulumi.dev.yaml)
+      # — the single source of truth, nothing duplicated in this file. Needs
+      # only the Pulumi token, so it runs before AWS credentials exist.
+      - name: read stack config
+        run: |
+          set -euo pipefail
+          # Plain assignments, not $(...) inside echo: set -e only aborts on
+          # a failed substitution when it's an assignment, and an empty tag
+          # would make tagged-resources-left a false 0.
+          region=$(pulumi config get aws:region --stack dev)
+          project=$(pulumi config get --path 'aws:defaultTags.tags.Project' --stack dev)
+          stack=$(pulumi config get --path 'aws:defaultTags.tags.Stack' --stack dev)
+          {
+            echo "AWS_REGION=$region"
+            echo "PROJECT_TAG=$project"
+            echo "STACK_TAG=$stack"
+          } >> "$GITHUB_ENV"
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ vars.HW31_CI_ROLE_ARN }} # infra/base stack's ciRoleArn output
           aws-region: ${{ env.AWS_REGION }}
 
-      - uses: pulumi/actions@v6
-
       - name: pulumi destroy
-        working-directory: infra/demo
-        env:
-          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
         run: pulumi destroy --yes --skip-preview --stack dev
 
       - name: six zeros
-        working-directory: infra/demo
-        env:
-          PULUMI_ACCESS_TOKEN: ${{ secrets.PULUMI_ACCESS_TOKEN }}
         run: |
           set -euo pipefail
 
-          # A deleted NAT Gateway stays visible to the tagging API for a
-          # while, so it's excluded here — nat-left below counts live ones
-          # by state instead.
-          tagged() {
-            aws resourcegroupstaggingapi get-resources --region "$1" \
-              --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
-              --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])" \
-              --output text
+          # Every count sums both regions: us-east-1 hosts global-service
+          # endpoints (IAM, Budgets, billing) and is the usual console
+          # default, so it's where a stray resource most often turns up.
+          both() {
+            local n=0
+            for r in "$AWS_REGION" us-east-1; do
+              n=$(( n + $("$@" --region "$r" --output text) ))
+            done
+            echo "$n"
           }
 
           echo "state-resources-left=$(pulumi stack export --stack dev | jq '[.deployment.resources[]? | select(.type | startswith("aws:"))] | length')"
-          echo "tagged-resources-left=$(( $(tagged "$AWS_REGION") + $(tagged us-east-1) ))"
-          echo "rds-left=$(aws rds describe-db-instances --region "$AWS_REGION" --query 'length(DBInstances)' --output text)"
-          echo "alb-left=$(aws elbv2 describe-load-balancers --region "$AWS_REGION" --query 'length(LoadBalancers)' --output text)"
-          echo "nat-left=$(aws ec2 describe-nat-gateways --region "$AWS_REGION" --filter Name=state,Values=available,pending --query 'length(NatGateways)' --output text)"
-          echo "eip-left=$(aws ec2 describe-addresses --region "$AWS_REGION" --query 'length(Addresses)' --output text)"
+          # A deleted NAT Gateway stays visible to the tagging API for a
+          # while, so it's excluded here — nat-left counts live ones by state.
+          echo "tagged-resources-left=$(both aws resourcegroupstaggingapi get-resources \
+            --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
+            --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])")"
+          echo "rds-left=$(both aws rds describe-db-instances --query 'length(DBInstances)')"
+          echo "alb-left=$(both aws elbv2 describe-load-balancers --query 'length(LoadBalancers)')"
+          echo "nat-left=$(both aws ec2 describe-nat-gateways --filter Name=state,Values=available,pending --query 'length(NatGateways)')"
+          echo "eip-left=$(both aws ec2 describe-addresses --query 'length(Addresses)')"
