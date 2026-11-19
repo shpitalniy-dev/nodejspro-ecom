@@ -13,26 +13,56 @@ const accessLog = logger.child({ layer: 'http' });
 
 export function correlationMiddleware(
   req: Request,
-  _res: Response,
+  res: Response,
   next: NextFunction,
 ): void {
   runInContext(
-    { idempotencyKey: req.header('idempotency-key') ?? undefined },
+    {
+      idempotencyKey: req.header('idempotency-key') ?? undefined,
+      // Not read by this file at all — logOnce below uses req/res directly
+      // from this closure. This snapshot exists solely for
+      // crash-handlers.ts: a process-level 'uncaughtException' listener
+      // has no closure over any request, registered once for the whole
+      // process's lifetime — AsyncLocalStorage is the only way it can
+      // know what was in flight when it fires.
+      req: {
+        method: req.method,
+        url: req.url,
+        headers: req.headers,
+        body: req.body,
+        ip: req.ip,
+      },
+    },
     () => {
-      // req and body are logged as their own top-level fields (not nested
-      // inside one object) so the redact config's paths
-      // (req.headers.authorization, body.password, *.token) land where
-      // they actually say they will. ip is its own field, not nested under
-      // req, so it survives even if req.headers ever needs redacting
-      // wholesale.
-      accessLog.info(
-        {
-          req: { method: req.method, url: req.url, headers: req.headers },
-          body: req.body,
-          ip: req.ip,
-        },
-        'request received',
-      );
+      const startedAt = process.hrtime.bigint();
+      let logged = false;
+
+      // One line per request, not two — written from whichever of these
+      // fires first. 'finish' is the normal case (response fully sent,
+      // success or a handled error alike — ProblemExceptionFilter's own
+      // res.json() still triggers it). 'close' covers a client that
+      // disconnects before a response ever completes, which 'finish'
+      // alone would silently miss entirely.
+      const logOnce = (aborted: boolean) => {
+        if (logged) return;
+        logged = true;
+
+        accessLog.info(
+          {
+            req: { method: req.method, url: req.url, headers: req.headers },
+            body: req.body,
+            ip: req.ip,
+            status: res.statusCode,
+            'duration-ms': Number(process.hrtime.bigint() - startedAt) / 1e6,
+            ...(aborted && { aborted: true }),
+          },
+          'request completed',
+        );
+      };
+
+      res.on('finish', () => logOnce(false));
+      res.on('close', () => logOnce(!res.writableEnded));
+
       next();
     },
   );

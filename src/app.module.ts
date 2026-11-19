@@ -29,6 +29,7 @@ import { OrdersService } from './controllers/orders/orders.service.ts';
 import { ProductsController } from './controllers/products/products.controller.ts';
 import { ProductsListRateLimitGuard } from './controllers/products/products.guards.ts';
 import { ProductsService } from './controllers/products/products.service.ts';
+import { ProblemExceptionFilter } from './filters/problem-exception.filter.ts';
 import { IdempotencyKeyInterceptor } from './interceptors/idempotency-key.interceptor.ts';
 import { LocationHeaderInterceptor } from './interceptors/location-header.interceptor.ts';
 import { CacheAsideService } from './services/cache/cache-aside.service.ts';
@@ -85,6 +86,7 @@ import { S3ClientService } from './services/storage/s3-client.service.ts';
     RolesGuard,
     S3ClientService,
     FilesService,
+    ProblemExceptionFilter,
     {
       provide: CacheAsideService,
       useFactory: async (conn: CacheRedisConnection, logger: LoggerService) =>

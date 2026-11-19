@@ -29,9 +29,14 @@ services:
       - '127.0.0.1:22917:4317' # OTLP gRPC
       - '127.0.0.1:22918:4318' # OTLP HTTP -> OTEL_EXPORTER_OTLP_ENDPOINT
     volumes:
-      - ./grafana-datasources.yml:/etc/grafana/provisioning/datasources/nodejspro-ecom-prometheus.yaml:ro
-      - ./grafana-dashboards-provider.yml:/etc/grafana/provisioning/dashboards/nodejspro-ecom.yaml:ro
-      - ./dashboard.json:/etc/grafana/provisioning/dashboards/nodejspro-ecom/dashboard.json:ro
+      # otel-lgtm is NOT a standalone Grafana image — its own Dockerfile
+      # copies provisioning under /otel-lgtm/grafana/conf/provisioning/, not
+      # the standard-Grafana /etc/grafana/provisioning/ (confirmed against
+      # grafana/docker-otel-lgtm's own Dockerfile). Mounting at the standard
+      # path silently provisioned nothing.
+      - ./grafana-datasources.yml:/otel-lgtm/grafana/conf/provisioning/datasources/nodejspro-ecom-prometheus.yaml:ro
+      - ./grafana-dashboards-provider.yml:/otel-lgtm/grafana/conf/provisioning/dashboards/nodejspro-ecom.yaml:ro
+      - ./dashboard.json:/otel-lgtm/grafana/conf/provisioning/dashboards/nodejspro-ecom/dashboard.json:ro
     healthcheck:
       test:
         ['CMD-SHELL', 'curl -sf -o /dev/null http://127.0.0.1:3000/api/health']

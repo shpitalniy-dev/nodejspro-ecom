@@ -54,7 +54,9 @@ export function configureApp(app: NestExpressApplication): void {
   );
 
   app.use(validationErrorHandler);
-  app.useGlobalFilters(new ProblemExceptionFilter());
+  // Resolved from the DI container (not `new ProblemExceptionFilter()`) so
+  // its constructor-injected LoggerService is the real, provider-managed one.
+  app.useGlobalFilters(app.get(ProblemExceptionFilter));
   // whitelist strips unknown properties silently rather than rejecting —
   // the OpenAPI middleware above already rejects them (with the specific
   // "must NOT have additional properties" body contract/check.js asserts

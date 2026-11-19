@@ -5,12 +5,15 @@ import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 
 import { Env } from './config/env.schema.ts';
+import { registerCrashHandlers } from './services/observability/crash-handlers.ts';
 import { ReadinessService } from './services/readiness.service.ts';
 import { sleep } from './utils/sleep.ts';
 import { AppModule } from './app.module.ts';
 import { configureApp } from './configure-app.ts';
 
 async function bootstrap() {
+  registerCrashHandlers();
+
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
