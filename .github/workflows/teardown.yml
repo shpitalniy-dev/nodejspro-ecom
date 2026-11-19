@@ -75,13 +75,34 @@ jobs:
             echo "$n"
           }
 
-          echo "state-resources-left=$(pulumi stack export --stack dev | jq '[.deployment.resources[]? | select(.type | startswith("aws:"))] | length')"
-          # A deleted NAT Gateway stays visible to the tagging API for a
-          # while, so it's excluded here — nat-left counts live ones by state.
-          echo "tagged-resources-left=$(both aws resourcegroupstaggingapi get-resources \
-            --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
-            --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])")"
-          echo "rds-left=$(both aws rds describe-db-instances --query 'length(DBInstances)')"
-          echo "alb-left=$(both aws elbv2 describe-load-balancers --query 'length(LoadBalancers)')"
-          echo "nat-left=$(both aws ec2 describe-nat-gateways --filter Name=state,Values=available,pending --query 'length(NatGateways)')"
-          echo "eip-left=$(both aws ec2 describe-addresses --query 'length(Addresses)')"
+          counts() {
+            state=$(pulumi stack export --stack dev | jq '[.deployment.resources[]? | select(.type | startswith("aws:"))] | length')
+            # A deleted NAT Gateway stays visible to the tagging API for a
+            # while, so it's excluded here — nat counts live ones by state.
+            tagged=$(both aws resourcegroupstaggingapi get-resources \
+              --tag-filters "Key=Project,Values=$PROJECT_TAG" "Key=Stack,Values=$STACK_TAG" \
+              --query "length(ResourceTagMappingList[?!contains(ResourceARN, ':natgateway/')])")
+            rds=$(both aws rds describe-db-instances --query 'length(DBInstances)')
+            alb=$(both aws elbv2 describe-load-balancers --query 'length(LoadBalancers)')
+            nat=$(both aws ec2 describe-nat-gateways --filter Name=state,Values=available,pending --query 'length(NatGateways)')
+            eip=$(both aws ec2 describe-addresses --query 'length(Addresses)')
+            total=$(( state + tagged + rds + alb + nat + eip ))
+          }
+
+          # AWS finishes some deletes after the API call returns (an ALB's
+          # public IPs, a NAT's EIP), so re-check until everything reaches 0,
+          # up to 20 x 15s. A real leak is still non-zero after that and fails.
+          for attempt in $(seq 1 20); do
+            counts
+            echo "attempt $attempt: state=$state tagged=$tagged rds=$rds alb=$alb nat=$nat eip=$eip"
+            [ "$total" -eq 0 ] && break
+            sleep 15
+          done
+
+          echo "state-resources-left=$state"
+          echo "tagged-resources-left=$tagged"
+          echo "rds-left=$rds"
+          echo "alb-left=$alb"
+          echo "nat-left=$nat"
+          echo "eip-left=$eip"
+          [ "$total" -eq 0 ]
