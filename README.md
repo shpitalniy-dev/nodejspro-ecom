@@ -3154,7 +3154,7 @@ scripts) — identical across 3 consecutive runs each.
 ## AWS | HW #31
 
 смуга: основна
-teardown-run: https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44136355375
+teardown-run: TBA
 регіон: eu-central-1
 
 This repo has three `package.json` files (repo root, `infra/base`,
@@ -3235,6 +3235,7 @@ per permission:
 | `iam:ListAttachedRolePolicies`               | find which managed policies are attached, to detach them                                         |
 | `iam:ListRolePolicies`                       | find any inline policies on the role, to delete them                                             |
 | `iam:DeleteRolePolicy`                       | delete any inline policy before deleting the role itself                                         |
+| `iam:ListInstanceProfilesForRole`            | the AWS provider checks for attached instance profiles before it deletes a role                  |
 | `tag:GetResources`                           | the teardown job's own `tagged-resources-left` check, in both regions                            |
 | `sts:GetCallerIdentity`                      | confirm which identity this role is actually running as, before deleting anything                |
 

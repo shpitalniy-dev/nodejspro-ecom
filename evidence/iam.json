@@ -82,7 +82,8 @@
           "iam:DetachRolePolicy",
           "iam:ListAttachedRolePolicies",
           "iam:ListRolePolicies",
-          "iam:DeleteRolePolicy"
+          "iam:DeleteRolePolicy",
+          "iam:ListInstanceProfilesForRole"
         ],
         "Effect": "Allow",
         "Resource": "*",

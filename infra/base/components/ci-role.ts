@@ -131,6 +131,8 @@ function teardownPolicy() {
         'iam:ListAttachedRolePolicies',
         'iam:ListRolePolicies',
         'iam:DeleteRolePolicy',
+        // the AWS provider checks for instance profiles before DeleteRole
+        'iam:ListInstanceProfilesForRole',
       ]),
       // The teardown workflow's own "tagged-resources-left" check: one
       // tag:GetResources query finds anything left standing, in either region.
