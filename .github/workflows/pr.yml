@@ -195,7 +195,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: scan (threshold from HW #28)
+      - name: scan (threshold from HW#28)
         env:
           IMAGE: ${{ needs.build.outputs.image }}
         run: |

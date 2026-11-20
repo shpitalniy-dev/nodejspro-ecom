@@ -13,8 +13,8 @@
         },
         "StringLike": {
           "token.actions.githubusercontent.com:sub": [
-            "repo:shpitalniy-dev/nodejspro-ecom:environment:staging",
-            "repo:shpitalniy-dev/nodejspro-ecom:environment:prod"
+            "repo:shpitalniy-dev@60486222/nodejspro-ecom@1345286723:environment:staging",
+            "repo:shpitalniy-dev@60486222/nodejspro-ecom@1345286723:environment:prod"
           ]
         }
       }
