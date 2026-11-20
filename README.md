@@ -1246,8 +1246,8 @@ docker compose rm -f broker broker-db
 
 ### CI gate
 
-`.github/workflows/contract.yml`, job `contract`, runs on every pull
-request and every push to `main`: starts the broker, generates the contract
+`.github/workflows/pr.yml`, job `pact` (was `contract.yml` before HW #32),
+runs on every pull request: starts the broker, generates the contract
 (`test:contract`), publishes it, runs `verify:provider` against the broker
 (`publishVerificationResult: true`), tags the consumer version it just
 published as `ci`, then a `can-i-deploy` step that fails the job outright
@@ -3290,6 +3290,191 @@ authenticates to the same organization via a `PULUMI_ACCESS_TOKEN`
 secret, so `pulumi destroy` in CI operates on the exact same stack state
 `up:demo` created, not a second copy of it.
 
+## CI/CD | HW #32
+
+Two workflows. `pr.yml` is the only workflow on `pull_request` (the grader
+takes the first green run on the PR head SHA, so HW #16's `contract.yml`
+and HW #28's `scan.yml` were merged into it). `deploy.yml` runs on a push
+to `main` and promotes the image that PR already built — it never builds.
+
+```mermaid
+flowchart LR
+  gates["gates<br/>actionlint · tsc+eslint+jest<br/>oasdiff · depcruise"] --> build["build<br/>the only docker build<br/>push to GHCR"]
+  build --> scan["scan<br/>npm run scan<br/>on the pushed digest"]
+  build --> deploy
+  scan --> deploy["deploy · env staging<br/>OIDC gate → kind → pulumi preview<br/>→ cost gate → pulumi up<br/>→ demo:rollout gate"]
+  pact["pact<br/>HW #16, shown not gated"]
+  gates & pact & build & scan & deploy --> evidence["evidence (if: always)<br/>artifact pipeline-evidence"]
+  merge(["merge to main"]) --> prod["deploy.yml · env prod<br/>same digest, no rebuild"]
+```
+
+- **Build once.** `build` is the only place with `docker/build-push-action`.
+  It tags the image with the PR head SHA and passes on `image@sha256:…`.
+  `scan`, `deploy` and `deploy.yml` all use that digest, never a tag.
+- **Every gate can say no.** `npm run demo:gates` proves each step both
+  ways on prepared inputs (`fixtures/gates/`): `<step>-ok=0` and
+  `<step>-broken≠0` for types, contract (oasdiff), arch (dependency-cruiser,
+  rule in `.dependency-cruiser.cjs`) and scan (threshold `SCAN_MAX`).
+- **Rollout is a merge condition.** `deploy` runs HW #28's `demo:rollout`
+  after `pulumi up` and fails the job unless `failed=0` and
+  `requests≥2000`. Nothing else about the script changed.
+- **Pact is kept on purpose, as a visualisation, not a verification.** The
+  `pact` job (HW #16) generates the consumer contract, publishes it and
+  verifies the provider against a broker that lives only inside that job.
+  So `can-i-deploy` can only repeat what `verify:provider` just said — it
+  has nothing independent to compare with (see `## Testing | HW #16` →
+  "CI gate"). It shows the publish → verify → can-i-deploy flow in every
+  run; the real contract gate in this pipeline is oasdiff in `gates`. A
+  real Pact gate needs a broker that outlives the job (self-hosted or
+  PactFlow).
+- **Pinned actions.** Every `uses:` is a 40-char commit SHA with the
+  version in a comment; `id-token: write` is set only on the jobs that
+  need it, never on the file.
+
+### Environments: where it deploys
+
+| GitHub environment | Trigger            | Target                                      |
+| ------------------ | ------------------ | ------------------------------------------- |
+| `staging`          | every PR to `main` | kind cluster inside the runner, HW #28 code |
+| `prod`             | push to `main`     | kind cluster inside the runner, HW #28 code |
+
+Both targets are ephemeral: the cluster lives only as long as the job.
+There is no long-lived cluster for this course (HW #31's AWS stack is
+destroyed, and its nightly teardown schedule was removed with it). What
+`deploy.yml` proves is the promotion path — the merged PR's exact digest
+(found by its head SHA tag, the merge commit's second parent) reaches
+`prod` without a rebuild. A squash or rebase merge has no second parent,
+so the job stops with an error; run it by hand with the `sha` input then.
+Switching to a real target means changing only the composite action
+`.github/actions/kind-deploy` — the gates, build and evidence stay.
+
+The GHCR package `ghcr.io/shpitalniy-dev/nodejspro-ecom` is **public**, so
+the grader can compare the digest with the registry. The pipeline itself
+does not need that: kind pulls with `crictl pull --creds` and the job's
+`GITHUB_TOKEN`.
+
+### Pipeline secrets
+
+Nothing in GitHub Secrets opens the cloud or the registry. Registry —
+`GITHUB_TOKEN` with `packages: write` (build) or `packages: read`
+(scan/deploy), issued per job. Cloud — OIDC: the job asks GitHub for a
+short-lived ID token, and `scripts/oidc-gate.mjs` checks it before any
+cluster exists.
+
+| Secret                | Read by                 | Why                                                                                                           |
+| --------------------- | ----------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `GITHUB_TOKEN`        | `pr.yml`, `deploy.yml`  | issued by GitHub per job, expires with it — push and pull GHCR images                                         |
+| `PACT_BROKER_TOKEN`   | `pr.yml` job `pact`     | HW #16 shape for a hosted broker; **not set** — the broker runs inside the job without auth, empty is fine    |
+| `PULUMI_ACCESS_TOKEN` | `teardown.yml` (HW #31) | Pulumi Cloud state for the destroyed AWS stacks; manual `workflow_dispatch` only. HW #32 uses `file://` state |
+
+No vault access token is stored either: see the next table.
+
+### App variables (from the vault)
+
+| Variable               | Джерело       | In CI                                                     |
+| ---------------------- | ------------- | --------------------------------------------------------- |
+| `JWT_KID`              | сховище (#11) | `ci<random hex>`, made in the runner for this run         |
+| `JWT_PRIVATE_KEY`      | сховище (#11) | fresh ES256 pair made in the runner, masked, never stored |
+| `JWT_PUBLIC_KEY`       | сховище (#11) | the public half of that pair                              |
+| `REFRESH_TOKEN_PEPPER` | сховище (#11) | 32 random bytes made in the runner, masked                |
+
+Locally they come from the vault through `scripts/with-secrets.sh`, as in
+every homework since #11. The CI cluster lives for one job, so it does not
+need the real values: the composite action generates a set for that
+cluster only and runs with `SKIP_VAULT=1` — exactly the grader's mode. In
+both cases Pulumi puts them in a Kubernetes `Secret`, and the pod gets them
+by reference (`envFrom.secretRef`), never as `env[].value`. The `deploy`
+job counts how often each value appears in `deployment.json` and writes
+`secret-in-manifest=<n>` to the evidence; anything but 0 fails the job.
+
+### Where masking stops
+
+GitHub masks only the exact string it was given — the `secrets.*`
+values and anything passed to `::add-mask::`. It does not know a value
+that was base64-encoded, cut into pieces, URL-encoded, or printed by a tool
+in its own format (a JSON dump, `set -x` tracing, an error message that
+quotes its input). So masking here is a safety net, not the protection.
+The protection is that no step prints a secret: no `echo "$SECRET"`, `env`,
+`printenv` or `set -x`. The OIDC ID token never enters a shell variable,
+step output or argv — `oidc-gate.mjs` fetches it itself and prints only
+`iss`, `aud`, `sub` and the two verdicts. The generated app values are
+masked and then only written to `$GITHUB_ENV`. This closes the sixth
+secret leak place from #11 (git history, app log, image layer,
+`docker inspect`, `docker history`, and now the pipeline log).
+
+### OIDC trust policy
+
+The trust condition is [`oidc/policy.json`](oidc/policy.json): `aud` must
+equal `sts.amazonaws.com`, `sub` must be
+`repo:shpitalniy-dev@60486222/nodejspro-ecom@1345286723:environment:staging`
+or `…:environment:prod`. This is GitHub's immutable `sub` format: the
+owner and repo IDs are part of it, so a renamed or re-created repo with the
+same name does not match. Found from the first real run's log (the gate
+said `policy-allow=0` on the plain `repo:owner/repo:…` form), not guessed.
+The IDs are public, not secrets. `scripts/oidc-gate.mjs` checks the RS256 signature
+against GitHub's `jwks_uri`, then `iss` and `exp`, then the policy — the
+policy is never applied to unverified claims. The same code runs in the
+pipeline (real token, prints `oidc-*` lines into the evidence) and in
+`npm run demo:oidc` (tokens signed with a throwaway local key, three
+cases: green `1 1`, foreign sub `1 0`, bad signature `0 0`).
+
+### Cost gate
+
+`pulumi preview --json` runs on every PR; `src/mapping.ts` turns the plan
+into dollars and compares them with `COST_BUDGET_USD` (20 in `pr.yml`):
+over budget → exit 1 → the job is red. For every Deployment that is created
+or kept: `replicas × (vCPU × vCPU-rate + GB × GB-rate) × 730 h`, from the
+pod's `resources.requests`.
+
+| Rate              | USD     | Source                                                                                                                                                                                                                                                                                                |
+| ----------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| per vCPU per hour | 0.04656 | AWS Fargate, Linux/x86, eu-central-1, on-demand — [AWS Price List API, `AmazonECS` offer](https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonECS/current/eu-central-1/index.json) (publication 2026-11-11), also [aws.amazon.com/fargate/pricing](https://aws.amazon.com/fargate/pricing/) |
+| per GB per hour   | 0.00511 | same offer                                                                                                                                                                                                                                                                                            |
+
+Real plan from run
+[44787053351](https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44787053351):
+2 × (100m CPU, 48Mi) → `plan-usd=7.15`. Replicas are read in the order
+Kubernetes applies them: the HPA's `minReplicas` (an HPA overrides its
+Deployment's `replicas`; here the Deployment has none at all), then the
+Deployment's `replicas`, then 1. The earlier run
+[44742031108](https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44742031108)
+printed 3.57 — it counted 1 replica — and its `plan.json` became the unit
+test's fixture (`test/fixtures/plan.json`, the real Deployment and HPA
+steps, unedited), so the test checks the math on what Pulumi really emits.
+Fargate's minimum task size (0.25 vCPU / 0.5 GB) is ignored on
+purpose — the gate's mechanics matter here, not the exact bill (`shortcut:`
+comment in the code). To merge an over-budget change on purpose, add this label to the PR;
+the step then prints a warning instead of failing:
+
+cost-gate-bypass-label: cost-approved
+
+### Evidence
+
+The `evidence` job runs with `if: always()` and uploads the artifact
+`pipeline-evidence`: `evidence.txt` (`run-id`, `head-sha`, `image-ref`,
+`built-digest`, `deployed-digest`, `build-invocations`, `creds-source`,
+`oidc-*`, `rollout-*`, `secret-in-manifest`, `gate-scan-exit`),
+`deployment.json`, `plan.json`, `rollout.txt` and `build.log`.
+
+Run
+[44787053351](https://github.com/shpitalniy-dev/nodejspro-ecom/actions/runs/44787053351)
+(head `0a626ab`), checked with the homework's own grader commands:
+
+| Check                        | Value                                                                   |
+| ---------------------------- | ----------------------------------------------------------------------- |
+| built = deployed = registry  | `sha256:3fe89191…b28a595`, `build-invocations=1`                        |
+| OIDC in the pipeline         | `oidc-sig-verified=1`, `creds-source=oidc`, `sub=…:environment:staging` |
+| `demo:rollout` in the runner | `requests=6750 ok=6750 failed=0`, `rollout-seconds=17.1`                |
+| app secrets in the manifest  | `secret-in-manifest=0`, 1 `secretRef`                                   |
+| scan (HW #28 threshold 17)   | `found=17`, `gate-scan-exit=0`                                          |
+| cost gate                    | `plan-usd=7.15`, budget 20 → `gate=pass`                                |
+| `id-token: write`            | 0 on files, 3 on jobs; 0 JWTs in the run log                            |
+
+On the laptop (HW #28) the same rollout gave ~20 000 requests; the runner
+has 2 vCPUs and the cluster on it, so fewer requests — `failed=0` is the
+part that must not change. A later commit's run gives its own digest; the
+other numbers stay.
+
 ## Grading
 
 Fresh clone, clean DB, no vault access. Run the setup first, then the section you need. The static checks (DLX, prefetch, wrapper, env files) read the repository directly and need no commands.
@@ -3601,3 +3786,22 @@ Only after that run exists and its link is in the README: `npm run
 destroy:base` — the OIDC role that run depends on lives in `infra/base`, so
 destroying `base` first would strand the teardown workflow with nothing to
 assume.
+
+### HW #32 commands
+
+Local, no GitHub, no cluster. `demo:gates` needs Docker (oasdiff runs in a
+container, the scan gate builds the HW #28 image if it is missing). These
+commands read no app secret, so nothing new to export beyond `### Setup`.
+
+```bash
+export SKIP_VAULT=1           # the grader has no vault access
+npm ci
+npm run demo:gates            # four gate steps, both ways: <step>-ok=0, <step>-broken≠0
+npm run demo:oidc             # green 1 1 · foreign-sub 1 0 · bad-signature 0 0
+
+# plan.json comes from the run artifact, it is not committed
+mkdir -p /tmp/hw32
+gh run download "$RUN_ID" -R shpitalniy-dev/nodejspro-ecom -n pipeline-evidence -D /tmp/hw32
+PLAN_JSON=/tmp/hw32/plan.json COST_BUDGET_USD=0      npm run gate:cost   # gate=fail, exit 1
+PLAN_JSON=/tmp/hw32/plan.json COST_BUDGET_USD=999999 npm run gate:cost   # gate=pass, exit 0
+```
