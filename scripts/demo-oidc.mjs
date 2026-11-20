@@ -30,6 +30,7 @@ async function main() {
     alg: 'RS256',
     use: 'sig',
   };
+
   const srv = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ keys: [jwk] }));
@@ -68,6 +69,7 @@ async function main() {
       ['foreign-sub', foreign, [1, 0]],
       ['bad-signature', badSig, [0, 0]],
     ];
+
     let mismatches = 0;
 
     for (const [name, token, [sigExp, allowExp]] of cases) {

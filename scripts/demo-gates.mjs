@@ -25,6 +25,7 @@ function run(label, cmd, args, env = {}) {
     env: { ...process.env, ...env },
     maxBuffer: 64 * 1024 * 1024,
   });
+
   const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim().split('\n');
 
   console.error(`--- ${label}: exit ${r.status}`);

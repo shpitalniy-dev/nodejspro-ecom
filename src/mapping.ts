@@ -21,9 +21,13 @@ interface PlanStep {
   newState?: {
     type: string;
     inputs?: {
+      metadata?: { name?: string; namespace?: string };
       spec?: {
         replicas?: number;
         template?: { spec?: { containers?: Container[] } };
+        // HorizontalPodAutoscaler only
+        scaleTargetRef?: { kind?: string; name?: string };
+        minReplicas?: number;
       };
     };
   };
@@ -52,18 +56,38 @@ export function parseMemoryGb(value = '0'): number {
   return (Number(match[1]) * (MEMORY_UNITS[match[2] ?? ''] ?? 1)) / 2 ** 30;
 }
 
+const DEPLOYMENT = 'kubernetes:apps/v1:Deployment';
+const HPA = 'kubernetes:autoscaling/v2:HorizontalPodAutoscaler';
+
 export function planMonthlyUsd(plan: { steps?: PlanStep[] }): number {
+  const steps = (plan.steps ?? []).filter(s => s.op !== 'delete');
+  // An HPA overrides its Deployment's replicas, so its minReplicas (k8s
+  // default 1) is what always runs. scaleTargetRef is same-namespace.
+  const hpaMin = new Map<string, number>();
+
+  for (const step of steps) {
+    const i = step.newState?.inputs;
+
+    if (
+      step.newState?.type === HPA &&
+      i?.spec?.scaleTargetRef?.kind === 'Deployment'
+    )
+      hpaMin.set(
+        `${i.metadata?.namespace}/${i.spec.scaleTargetRef.name}`,
+        i.spec.minReplicas ?? 1,
+      );
+  }
+
   let total = 0;
 
-  for (const step of plan.steps ?? []) {
-    if (
-      step.op === 'delete' ||
-      step.newState?.type !== 'kubernetes:apps/v1:Deployment'
-    )
-      continue;
+  for (const step of steps) {
+    if (step.newState?.type !== DEPLOYMENT) continue;
 
-    const spec = step.newState.inputs?.spec;
-    const replicas = spec?.replicas ?? 1;
+    const { metadata, spec } = step.newState.inputs ?? {};
+    const replicas =
+      hpaMin.get(`${metadata?.namespace}/${metadata?.name}`) ??
+      spec?.replicas ??
+      1;
 
     for (const c of spec?.template?.spec?.containers ?? []) {
       const req = c.resources?.requests ?? {};
