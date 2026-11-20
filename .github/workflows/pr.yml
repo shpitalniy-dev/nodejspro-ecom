@@ -1,0 +1,327 @@
+name: pr
+
+# HW #32 — every job here is a place that can say "no", and the whole PR
+# is one run: the grader takes the first successful run on the PR head
+# and downloads `pipeline-evidence` from it, so nothing else may run on
+# pull_request (contract.yml and scan.yml were folded in here for that).
+#
+#   gates ──> build ──> scan ──> deploy (kind, staging) ──┐
+#   pact  ───────────────────────────────────────────────>├─> evidence
+on:
+  pull_request:
+    branches: [main, hw-31] # shortcut: hw-31 only to test the stacked PR hw-32 -> hw-31, remove before merge to main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash # -eo pipefail: a failing tool before `| tee` fails the step
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # On pull_request github.sha is the merge commit, not the branch head.
+  HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+jobs:
+  # Gate steps 1-3: types & style, contract, architecture.
+  gates:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # origin/main's spec for oasdiff
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: actionlint
+        run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
+      - name: types & style
+        run: npm run ts-lint && npm run lint && npm test
+
+      - name: contract — oasdiff against main
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/base"
+          git show "origin/$BASE_REF:openapi/openapi.yaml" > "$RUNNER_TEMP/base/openapi.yaml"
+          docker run --rm -v "$RUNNER_TEMP/base:/base" -v "$PWD/openapi:/head" \
+            tufin/oasdiff:v1.32.1 breaking /base/openapi.yaml /head/openapi.yaml --fail-on ERR
+
+      - name: architecture — dependency-cruiser
+        run: npx depcruise --no-progress --validate .dependency-cruiser.cjs src
+
+  # HW #16's consumer/provider Pact check, moved here unchanged from the
+  # old contract.yml (see the comments there in git history for why the
+  # can-i-deploy step is a smoke test, not a gate).
+  pact:
+    runs-on: ubuntu-latest
+    env:
+      PACT_BROKER_URL: http://127.0.0.1:6620
+      PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: Start Pact Broker
+        run: docker compose --profile contract up -d --wait broker
+
+      - name: Consumer — generate contract
+        run: npm run test:contract
+
+      - name: Publish contract to broker
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          curl -sf -X PUT \
+            "$PACT_BROKER_URL/pacts/provider/ecom-api/consumer/storefront-web/version/$VERSION" \
+            -H 'Content-Type: application/json' \
+            -d @pacts/storefront-web-ecom-api.json
+
+      - name: Provider verification (publishes result to broker)
+        run: npm run verify:provider
+        env:
+          PROVIDER_VERSION: ${{ github.sha }}
+
+      - name: Tag consumer version
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          curl -sf -X PUT \
+            "$PACT_BROKER_URL/pacticipants/storefront-web/versions/$VERSION/tags/ci" \
+            -H 'Content-Type: application/json'
+
+      - name: can-i-deploy (smoke test)
+        env:
+          VERSION: ${{ github.sha }}
+        run: |
+          curl -sf "$PACT_BROKER_URL/can-i-deploy?pacticipant=ecom-api&version=$VERSION&to=ci" -o cid.json
+          cat cid.json
+          node -e "process.exit(require('./cid.json').summary.deployable === true ? 0 : 1)"
+
+      # stop/rm by service name, never `down -v` (that wipes the whole
+      # compose project's volumes).
+      - name: Stop Pact Broker
+        if: always()
+        run: docker compose stop broker broker-db && docker compose rm -f broker broker-db
+
+  # The ONLY place in the repo that builds the image. Its digest leaves
+  # through `outputs`; every later job uses that, never the tag.
+  build:
+    needs: gates
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write # GHCR via GITHUB_TOKEN — no registry secret anywhere
+    outputs:
+      image: ${{ env.IMAGE_NAME }}@${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: distroless
+          push: true
+          tags: ${{ env.IMAGE_NAME }}:${{ env.HEAD_SHA }}
+          labels: org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          # docker/Dockerfile's build-secret demo stage; no real private
+          # registry exists, any value works and is never persisted.
+          secrets: npmtoken=ci-dummy-token
+          # One plain manifest, so the pushed digest is the image itself.
+          provenance: false
+          sbom: false
+
+      - name: record build
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p part
+          echo "build $HEAD_SHA $DIGEST" >> part/build.log
+          {
+            echo "image-ref=$IMAGE_NAME:$HEAD_SHA"
+            echo "built-digest=$DIGEST"
+          } > part/evidence-build.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: part-build
+          path: part/
+
+  # Gate step 4: HW #28's `npm run scan` on the exact pushed digest.
+  scan:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: scan (threshold from HW #28)
+        env:
+          IMAGE: ${{ needs.build.outputs.image }}
+        run: |
+          docker pull "$IMAGE"
+          docker tag "$IMAGE" nodejspro-ecom-api:k8s
+          mkdir -p part
+          set +e
+          npm run scan
+          code=$?
+          set -e
+          echo "gate-scan-exit=$code" > part/evidence-scan.txt
+          exit "$code"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: part-scan
+          path: part/
+
+  # kind in this runner, Pulumi from HW #28, demo:rollout as a merge gate.
+  deploy:
+    needs: [build, scan]
+    runs-on: ubuntu-latest
+    environment: staging # OIDC sub = repo:…:environment:staging
+    permissions:
+      contents: read
+      packages: read
+      id-token: write # this job only — the one that asks for credentials
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: ./.github/actions/kind-deploy
+        with:
+          image: ${{ needs.build.outputs.image }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Over budget → exit 1 → red PR, unless the named label is on it.
+      - name: pulumi preview + cost gate
+        env:
+          COST_BUDGET_USD: '20' # plan today ≈ $7/month; see README ## CI/CD
+          COST_APPROVED: ${{ contains(github.event.pull_request.labels.*.name, 'cost-approved') }}
+        run: |
+          mkdir -p part
+          pulumi -C infra preview --json > part/plan.json
+          set +e
+          PLAN_JSON=part/plan.json npm run --silent gate:cost
+          code=$?
+          set -e
+          if [ "$code" -ne 0 ] && [ "$COST_APPROVED" = true ]; then
+            echo "::warning::over budget — bypassed by label cost-approved"
+            code=0
+          fi
+          exit "$code"
+
+      - name: pulumi up
+        run: npm run up
+
+      - name: deployed manifest
+        run: kubectl -n nodejspro-ecom get deploy nodejspro-ecom-api -o json > part/deployment.json
+
+      # demo:rollout itself changes the pod template (REV) and exits 0 even
+      # with failures — the next step is what turns `failed` into a gate.
+      - name: demo:rollout
+        run: npm run --silent demo:rollout 2>&1 | tee part/rollout.txt
+
+      - name: rollout gate + evidence
+        run: |
+          val() { awk -F= -v k="$1" '$1==k{v=$2} END{print v}' "$2"; }
+          requests=$(val requests part/rollout.txt)
+          ok=$(val ok part/rollout.txt)
+          failed=$(val failed part/rollout.txt)
+          seconds=$(val rollout-seconds part/rollout.txt)
+          image=$(node -e 'console.log(require("./part/deployment.json").spec.template.spec.containers[0].image)')
+          # How many times an app secret's VALUE shows up in the manifest —
+          # computed here, where the values exist; only the count leaves.
+          leaks=$(node -e '
+            const m = require("fs").readFileSync("part/deployment.json", "utf8");
+            const names = ["JWT_PRIVATE_KEY", "JWT_PUBLIC_KEY", "REFRESH_TOKEN_PEPPER"];
+            console.log(names.reduce((n, k) => n + m.split(process.env[k]).length - 1, 0));')
+          {
+            echo "creds-source=oidc"
+            grep -E '^oidc-(iss|aud|sub|sig-verified)=' oidc.txt
+            echo "deployed-digest=${image#*@}"
+            echo "rollout-requests=$requests"
+            echo "rollout-ok=$ok"
+            echo "rollout-failed=$failed"
+            echo "rollout-seconds=$seconds"
+            echo "secret-in-manifest=$leaks"
+          } > part/evidence-deploy.txt
+          cat part/evidence-deploy.txt
+          [ "$failed" = 0 ] && [ "$requests" -ge 2000 ] && [ "$leaks" = 0 ]
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: part-deploy
+          path: part/
+
+  # Joins every job's part into the one artifact the grader reads. Runs
+  # even when something above failed — a red run still needs evidence.
+  evidence:
+    needs: [gates, pact, build, scan, deploy]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: part-*
+          path: parts
+          merge-multiple: true
+
+      - name: evidence.txt
+        env:
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          mkdir -p out
+          touch parts/build.log
+          {
+            echo "run-id=$RUN_ID"
+            echo "head-sha=$HEAD_SHA"
+            cat parts/evidence-*.txt 2>/dev/null || true
+            echo "build-invocations=$(wc -l < parts/build.log | tr -d ' ')"
+          } > out/evidence.txt
+          for f in build.log plan.json deployment.json rollout.txt; do
+            [ -f "parts/$f" ] && cp "parts/$f" out/
+          done
+          cat out/evidence.txt
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: pipeline-evidence
+          path: out/

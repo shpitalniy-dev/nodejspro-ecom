@@ -11,7 +11,9 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
 CLUSTER=nodejspro-ecom
-IMAGE=nodejspro-ecom-api:k8s
+# HW #32: CI passes IMAGE=ghcr.io/…@sha256:… — kind pulls that from the
+# registry by digest itself, so there is nothing local to load.
+IMAGE="${IMAGE:-nodejspro-ecom-api:k8s}"
 
 # Preflight: a real, previously-hit failure mode, not a hypothetical —
 # kind create fails with "all predefined address pools have been fully
@@ -34,12 +36,14 @@ fi
 
 kubectl --context "kind-$CLUSTER" wait --for=condition=Ready node --all --timeout=120s
 
-docker image inspect "$IMAGE" >/dev/null 2>&1 || {
-  echo "image $IMAGE not found — run \"npm run image:build\" first"
-  exit 1
-}
-echo "loading $IMAGE into $CLUSTER"
-kind load docker-image "$IMAGE" --name "$CLUSTER"
+if [[ "$IMAGE" != *@sha256:* ]]; then
+  docker image inspect "$IMAGE" >/dev/null 2>&1 || {
+    echo "image $IMAGE not found — run \"npm run image:build\" first"
+    exit 1
+  }
+  echo "loading $IMAGE into $CLUSTER"
+  kind load docker-image "$IMAGE" --name "$CLUSTER"
+fi
 
 kubectl --context "kind-$CLUSTER" get nodes
 

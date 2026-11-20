@@ -17,7 +17,14 @@ export default [
   importPlugin.flatConfigs.recommended,
   importPlugin.flatConfigs.typescript,
   {
-    ignores: ['node_modules', 'dist', 'build', '.test-build', '.turbo'],
+    ignores: [
+      'node_modules',
+      'dist',
+      'build',
+      '.test-build',
+      '.turbo',
+      'fixtures',
+    ],
   },
   {
     settings: {

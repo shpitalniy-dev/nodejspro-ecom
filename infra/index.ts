@@ -51,7 +51,9 @@ const hardened = process.env.HARDENED !== 'false';
 
 new WebService('nodejspro-ecom-api', {
   namespace: ns.metadata.name,
-  image: 'nodejspro-ecom-api:k8s',
+  // HW #32: the pipeline passes ghcr.io/…@sha256:… (the digest the build
+  // job produced); locally it stays the kind-loaded tag from HW #28.
+  image: process.env.IMAGE ?? 'nodejspro-ecom-api:k8s',
   replicas: 2,
   secretName: appSecret.metadata.name,
   hardened,
