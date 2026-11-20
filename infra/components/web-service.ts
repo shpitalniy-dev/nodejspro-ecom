@@ -66,9 +66,9 @@ export class WebService extends pulumi.ComponentResource {
                 {
                   name: 'api',
                   image: args.image,
-                  // Loaded via `kind load docker-image`, never pulled from
-                  // a registry — IfNotPresent avoids a pointless pull
-                  // attempt that would just fail.
+                  // Locally: loaded via `kind load docker-image`, so a pull
+                  // would just fail. In CI (HW #32): an @sha256 ref, which
+                  // IfNotPresent pulls once from GHCR, by digest.
                   imagePullPolicy: 'IfNotPresent',
                   ports: [{ containerPort: 3000 }],
                   env: Object.entries(args.env).map(([envName, value]) => ({

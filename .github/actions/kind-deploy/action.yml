@@ -1,0 +1,114 @@
+name: kind-deploy
+description: >-
+  Shared by pr.yml and deploy.yml (HW #32). OIDC gate first — nothing below
+  it runs unless the token's signature and sub check out — then a kind
+  cluster in this runner, the image pulled into it BY DIGEST, the app's
+  secrets generated for this run only, and a fresh Pulumi stack on the
+  local file backend (no `pulumi login`). The caller runs preview/up.
+
+inputs:
+  image:
+    description: ghcr.io/…@sha256:… — never a tag
+    required: true
+  registry-token:
+    description: GITHUB_TOKEN with packages:read, for pulling the image
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: image must be a digest
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        case "$IMAGE" in
+          *@sha256:*) ;;
+          *) echo "::error::not a digest ref: $IMAGE"; exit 1 ;;
+        esac
+
+    - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+      with:
+        node-version: '24'
+        cache: npm
+
+    - name: npm ci
+      shell: bash
+      run: npm ci && npm --prefix infra ci
+
+    # The gate fetches the ID token itself (needs `id-token: write` on the
+    # calling job) and prints iss/aud/sub — never the token. Exit ≠ 0 stops
+    # the job here, before any cluster exists.
+    - name: OIDC gate
+      shell: bash
+      run: node scripts/oidc-gate.mjs | tee oidc.txt
+
+    - uses: helm/kind-action@ea822c7bf1874f08e5a491df991c228edffc3376 # v1.15.2
+      with:
+        install_only: true
+
+    # No `command:` — installs the Pulumi CLI only.
+    - uses: pulumi/actions@96c7761824268174e0d2a4e8c7d75671eebd24a7 # v7.1.0
+
+    - name: kind cluster
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: bash scripts/cluster-up.sh
+
+    # A kind node is a separate container runtime: it can't see this
+    # runner's docker login. crictl pulls the exact digest into it, so the
+    # pod's IfNotPresent finds it locally — works while the GHCR package
+    # is still private.
+    - name: pull image into kind by digest
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+        REGISTRY_TOKEN: ${{ inputs.registry-token }}
+        REGISTRY_USER: ${{ github.actor }}
+      run: |
+        docker exec nodejspro-ecom-control-plane \
+          crictl pull --creds "$REGISTRY_USER:$REGISTRY_TOKEN" "$IMAGE"
+
+    # App secrets (the HW #11 vault's set) are generated on this runner for
+    # this ephemeral cluster only — nothing in GitHub Secrets. Masked as a
+    # safety net, not as protection: nothing below prints them.
+    - name: app secrets for this run
+      shell: bash
+      run: |
+        node -e '
+        const { appendFileSync } = require("node:fs");
+        const { generateKeyPairSync, randomBytes } = require("node:crypto");
+        const { privateKey, publicKey } = generateKeyPairSync("ec", {
+          namedCurve: "P-256",
+          privateKeyEncoding: { type: "pkcs8", format: "pem" },
+          publicKeyEncoding: { type: "spki", format: "pem" },
+        });
+        const secrets = {
+          JWT_PRIVATE_KEY: Buffer.from(privateKey).toString("base64"),
+          JWT_PUBLIC_KEY: Buffer.from(publicKey).toString("base64"),
+          REFRESH_TOKEN_PEPPER: randomBytes(32).toString("base64"),
+        };
+        for (const [name, value] of Object.entries(secrets)) {
+          console.log(`::add-mask::${value}`);
+          appendFileSync(process.env.GITHUB_ENV, `${name}=${value}\n`);
+        }
+        appendFileSync(process.env.GITHUB_ENV, `JWT_KID=ci${randomBytes(2).toString("hex")}\n`);
+        '
+
+    - name: pulumi stack (file backend)
+      shell: bash
+      env:
+        IMAGE: ${{ inputs.image }}
+      run: |
+        mkdir -p .pulumi
+        {
+          echo "PULUMI_BACKEND_URL=file://$GITHUB_WORKSPACE/.pulumi"
+          # Not a secret: matches infra/Pulumi.dev.yaml's committed salt.
+          echo "PULUMI_CONFIG_PASSPHRASE=hw28-dev"
+          echo "SKIP_VAULT=1"
+          echo "IMAGE=$IMAGE"
+        } >> "$GITHUB_ENV"
+        PULUMI_BACKEND_URL="file://$GITHUB_WORKSPACE/.pulumi" \
+          PULUMI_CONFIG_PASSPHRASE=hw28-dev \
+          pulumi -C infra stack init dev
