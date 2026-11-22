@@ -1,17 +1,14 @@
 name: teardown
 
-# Tears down the demo stack (RDS, ALB, NAT) every night and on demand, so
-# nothing hourly-billed survives an ended session by accident. Auth is the
+# Tears down the demo stack (RDS, ALB, NAT) on demand. The nightly schedule
+# was removed after HW #31: the stack and its CI role are destroyed. Auth is the
 # OIDC role infra/base's CiRole component creates — no AWS keys stored in
 # GitHub at all. No PULUMI_CONFIG_PASSPHRASE: Pulumi Cloud (not a self-hosted
 # backend) handles secrets encryption on its own.
 on:
-  schedule:
-    - cron: '0 2 * * *'
   workflow_dispatch: {}
 
 permissions:
-  id-token: write # required for GitHub to issue the OIDC token
   contents: read
 
 env:
@@ -20,19 +17,22 @@ env:
 jobs:
   teardown:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # this job only — required for GitHub to issue the OIDC token
     defaults:
       run:
         working-directory: infra/demo
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
 
       - run: npm ci
 
-      - uses: pulumi/actions@v6
+      - uses: pulumi/actions@8582a9e8cc630786854029b4e09281acd6794b58 # v6.6.1
 
       # Region and tags come from the demo stack's own config (Pulumi.dev.yaml)
       # — the single source of truth, nothing duplicated in this file. Needs
@@ -52,7 +52,7 @@ jobs:
             echo "STACK_TAG=$stack"
           } >> "$GITHUB_ENV"
 
-      - uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
         with:
           role-to-assume: ${{ vars.HW31_CI_ROLE_ARN }} # infra/base stack's ciRoleArn output
           aws-region: ${{ env.AWS_REGION }}
