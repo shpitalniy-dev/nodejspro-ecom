@@ -1,0 +1,75 @@
+name: deploy
+
+# HW #32 — promote, never rebuild. A merge to main deploys the image the
+# PR run already built, gated and rolled out: same bytes, found by the PR
+# head SHA tag and pinned to its digest. The target is the same kind
+# cluster in a runner as the PR's (no long-lived cluster exists here —
+# see README ## CI/CD); what this workflow proves is the promotion path.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: PR head SHA whose image to deploy (default — the merged PR's)
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: prod # OIDC sub = repo:…:environment:prod
+    permissions:
+      contents: read
+      packages: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2 # the merge commit's second parent is the PR head
+
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: resolve
+        name: digest of the PR's image
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+        run: |
+          sha="${INPUT_SHA:-$(git rev-parse --verify --quiet HEAD^2 || true)}"
+          if [ -z "$sha" ]; then
+            echo "::error::not a merge commit and no sha input — no PR image exists for this commit (squash/rebase merge or a direct push)"
+            exit 1
+          fi
+          digest=$(docker buildx imagetools inspect "$IMAGE_NAME:$sha" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "promoting $IMAGE_NAME:$sha -> $digest"
+          echo "image=$IMAGE_NAME@$digest" >> "$GITHUB_OUTPUT"
+
+      - uses: ./.github/actions/kind-deploy
+        with:
+          image: ${{ steps.resolve.outputs.image }}
+          registry-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: pulumi up
+        run: npm run up
+
+      - name: deployed digest
+        run: |
+          kubectl -n nodejspro-ecom get deploy nodejspro-ecom-api \
+            -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'

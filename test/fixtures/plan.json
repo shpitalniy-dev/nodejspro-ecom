@@ -1,0 +1,296 @@
+{
+  "steps": [
+    {
+      "op": "create",
+      "urn": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService$kubernetes:autoscaling/v2:HorizontalPodAutoscaler::nodejspro-ecom-api",
+      "provider": "urn:pulumi:dev::nodejspro-ecom-k8s::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "newState": {
+        "urn": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService$kubernetes:autoscaling/v2:HorizontalPodAutoscaler::nodejspro-ecom-api",
+        "custom": true,
+        "type": "kubernetes:autoscaling/v2:HorizontalPodAutoscaler",
+        "inputs": {
+          "apiVersion": "autoscaling/v2",
+          "kind": "HorizontalPodAutoscaler",
+          "metadata": {
+            "name": "nodejspro-ecom-api",
+            "namespace": "nodejspro-ecom"
+          },
+          "spec": {
+            "behavior": {
+              "scaleDown": {
+                "stabilizationWindowSeconds": 30
+              }
+            },
+            "maxReplicas": 4,
+            "metrics": [
+              {
+                "resource": {
+                  "name": "cpu",
+                  "target": {
+                    "averageUtilization": 50,
+                    "type": "Utilization"
+                  }
+                },
+                "type": "Resource"
+              }
+            ],
+            "minReplicas": 2,
+            "scaleTargetRef": {
+              "apiVersion": "apps/v1",
+              "kind": "Deployment",
+              "name": "nodejspro-ecom-api"
+            }
+          }
+        },
+        "parent": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService::nodejspro-ecom-api",
+        "dependencies": [
+          "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Namespace::nodejspro-ecom"
+        ],
+        "provider": "urn:pulumi:dev::nodejspro-ecom-k8s::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "propertyDependencies": {
+          "apiVersion": [],
+          "kind": [],
+          "metadata": [
+            "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Namespace::nodejspro-ecom"
+          ],
+          "spec": []
+        },
+        "sourcePosition": "project:///components/web-service.ts#167,7",
+        "stackTrace": [
+          {
+            "sourcePosition": "project:///components/web-service.ts#167,7"
+          },
+          {
+            "sourcePosition": "project:///index.ts#52,1"
+          },
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/pulumi/vendor/ts-node@7.0.1/index.js#3009,23"
+          },
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/pulumi/vendor/ts-node@7.0.1/index.js#3011,12"
+          },
+          {},
+          {},
+          {},
+          {},
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+          },
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#78,28"
+          },
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1598,22"
+          }
+        ]
+      },
+      "detailedDiff": null
+    },
+    {
+      "op": "create",
+      "urn": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService$kubernetes:apps/v1:Deployment::nodejspro-ecom-api",
+      "provider": "urn:pulumi:dev::nodejspro-ecom-k8s::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+      "newState": {
+        "urn": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService$kubernetes:apps/v1:Deployment::nodejspro-ecom-api",
+        "custom": true,
+        "type": "kubernetes:apps/v1:Deployment",
+        "inputs": {
+          "apiVersion": "apps/v1",
+          "kind": "Deployment",
+          "metadata": {
+            "labels": {
+              "app": "nodejspro-ecom-api"
+            },
+            "name": "nodejspro-ecom-api",
+            "namespace": "nodejspro-ecom"
+          },
+          "spec": {
+            "selector": {
+              "matchLabels": {
+                "app": "nodejspro-ecom-api"
+              }
+            },
+            "strategy": {
+              "rollingUpdate": {
+                "maxSurge": 1,
+                "maxUnavailable": 0
+              },
+              "type": "RollingUpdate"
+            },
+            "template": {
+              "metadata": {
+                "labels": {
+                  "app": "nodejspro-ecom-api"
+                }
+              },
+              "spec": {
+                "containers": [
+                  {
+                    "env": [
+                      {
+                        "name": "PORT",
+                        "value": "3000"
+                      },
+                      {
+                        "name": "DB_URL",
+                        "value": "postgresql://demo:demo@localhost:5432/ecom"
+                      },
+                      {
+                        "name": "BROKER_URL",
+                        "value": "amqp://demo:demo@localhost:5672"
+                      },
+                      {
+                        "name": "REDIS_URL",
+                        "value": "redis://localhost:6379"
+                      },
+                      {
+                        "name": "REDIS_QUEUE_URL",
+                        "value": "redis://localhost:6380"
+                      },
+                      {
+                        "name": "STORAGE_ENDPOINT",
+                        "value": "http://localhost:9000"
+                      },
+                      {
+                        "name": "STORAGE_ACCESS_KEY",
+                        "value": "demo"
+                      },
+                      {
+                        "name": "STORAGE_SECRET_KEY",
+                        "value": "demo"
+                      },
+                      {
+                        "name": "STORAGE_BUCKET_UPLOADS",
+                        "value": "uploads"
+                      },
+                      {
+                        "name": "STORAGE_BUCKET_ASSETS",
+                        "value": "assets"
+                      },
+                      {
+                        "name": "DRAIN_MS",
+                        "value": "5000"
+                      },
+                      {
+                        "name": "WARMUP_MS",
+                        "value": "4000"
+                      },
+                      {
+                        "name": "REV",
+                        "value": "1"
+                      }
+                    ],
+                    "envFrom": [
+                      {
+                        "secretRef": {
+                          "name": "app-secret"
+                        }
+                      }
+                    ],
+                    "image": "ghcr.io/shpitalniy-dev/nodejspro-ecom@sha256:104c5beb228c7972e93fdca3a74b6a9da7b97a856b480cf6825aac69cf588a3d",
+                    "imagePullPolicy": "IfNotPresent",
+                    "livenessProbe": {
+                      "failureThreshold": 3,
+                      "httpGet": {
+                        "path": "/healthz",
+                        "port": 3000
+                      },
+                      "periodSeconds": 10
+                    },
+                    "name": "api",
+                    "ports": [
+                      {
+                        "containerPort": 3000
+                      }
+                    ],
+                    "readinessProbe": {
+                      "failureThreshold": 1,
+                      "httpGet": {
+                        "path": "/readyz",
+                        "port": 3000
+                      },
+                      "periodSeconds": 1
+                    },
+                    "resources": {
+                      "limits": {
+                        "memory": "192Mi"
+                      },
+                      "requests": {
+                        "cpu": "100m",
+                        "memory": "48Mi"
+                      }
+                    },
+                    "securityContext": {
+                      "runAsNonRoot": true,
+                      "runAsUser": 65532
+                    },
+                    "startupProbe": {
+                      "failureThreshold": 30,
+                      "httpGet": {
+                        "path": "/healthz",
+                        "port": 3000
+                      },
+                      "periodSeconds": 2
+                    }
+                  }
+                ],
+                "terminationGracePeriodSeconds": 20
+              }
+            }
+          }
+        },
+        "parent": "urn:pulumi:dev::nodejspro-ecom-k8s::nodejspro-ecom:index:WebService::nodejspro-ecom-api",
+        "dependencies": [
+          "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Secret::app-secret",
+          "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Namespace::nodejspro-ecom"
+        ],
+        "provider": "urn:pulumi:dev::nodejspro-ecom-k8s::pulumi:providers:kubernetes::default_4_34_3::04da6b54-80e4-46f7-96ec-b56ff0331ba9",
+        "propertyDependencies": {
+          "apiVersion": [],
+          "kind": [],
+          "metadata": [
+            "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Namespace::nodejspro-ecom"
+          ],
+          "spec": [
+            "urn:pulumi:dev::nodejspro-ecom-k8s::kubernetes:core/v1:Secret::app-secret"
+          ]
+        },
+        "sourcePosition": "project:///components/web-service.ts#37,5",
+        "stackTrace": [
+          {
+            "sourcePosition": "project:///components/web-service.ts#37,5"
+          },
+          {
+            "sourcePosition": "project:///index.ts#52,1"
+          },
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/pulumi/vendor/ts-node@7.0.1/index.js#3009,23"
+          },
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/pulumi/vendor/ts-node@7.0.1/index.js#3011,12"
+          },
+          {},
+          {},
+          {},
+          {},
+          {},
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/cmd/run/run.ts#541,33"
+          },
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/runtime/stack.ts#78,28"
+          },
+          {
+            "sourcePosition": "project:///node_modules/@pulumi/resource.ts#1598,22"
+          }
+        ]
+      },
+      "detailedDiff": null
+    }
+  ]
+}
