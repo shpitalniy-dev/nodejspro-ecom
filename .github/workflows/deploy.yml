@@ -57,7 +57,7 @@ jobs:
             echo "::error::not a merge commit and no sha input — no PR image exists for this commit (squash/rebase merge or a direct push)"
             exit 1
           fi
-          digest=$(docker buildx imagetools inspect "$IMAGE_NAME:$sha" --format '{{.Manifest.Digest}}')
+          digest=$(docker buildx imagetools inspect "$IMAGE_NAME:$sha" --format '{{json .Manifest}}' | jq -r .digest)
           echo "promoting $IMAGE_NAME:$sha -> $digest"
           echo "image=$IMAGE_NAME@$digest" >> "$GITHUB_OUTPUT"
 

@@ -9,6 +9,8 @@ name: pr
 #   pact  ───────────────────────────────────────────────>├─> evidence
 on:
   pull_request:
+    # labeled/unlabeled: adding cost-approved must re-run the cost gate
+    types: [opened, synchronize, reopened, labeled, unlabeled]
     branches: [main, hw-31] # shortcut: hw-31 only to test the stacked PR hw-32 -> hw-31, remove before merge to main
 
 permissions:
